@@ -879,7 +879,8 @@ class ErrorLogUtilityTest(unittest.TestCase):
                 "AUTH_SECRET",
             ):
                 self.assertNotIn(marker, raw)
-            self.assertEqual(stat.S_IMODE(log_path.stat().st_mode), 0o600)
+            if os.name == "posix":
+                self.assertEqual(stat.S_IMODE(log_path.stat().st_mode), 0o600)
 
     def test_append_error_log_trims_oldest_complete_lines_and_stays_under_cap(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1075,7 +1076,8 @@ class ErrorLogUtilityTest(unittest.TestCase):
                 server._append_error_log(fields, log_path)
 
             chmod.assert_called_with(log_path, stat.S_IRUSR | stat.S_IWUSR)
-            self.assertEqual(stat.S_IMODE(log_path.stat().st_mode), 0o600)
+            if os.name == "posix":
+                self.assertEqual(stat.S_IMODE(log_path.stat().st_mode), 0o600)
 
 
 if __name__ == "__main__":
