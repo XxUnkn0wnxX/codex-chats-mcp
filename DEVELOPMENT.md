@@ -141,7 +141,7 @@ set -euo pipefail
 codex mcp get codex-chats
 ```
 
-Restart or reload Codex after changing the server: active sessions can retain an old process and tool schema. Run only the read-only smoke tools `list_conversations`, `search_conversations`, and `get_conversation`. Inspect only the sanitized `<install_dir>/codex-chats-mcp-errors.log` (or your trusted `CODEX_CHATS_ERROR_LOG` path). A missing log is expected when calls succeed; success calls intentionally add nothing.
+Restart or reload Codex after changing the server: active sessions can retain an old process and tool schema. Run only the read-only smoke tools `list_conversations`, `search_conversations`, and `get_conversation`. Inspect only the sanitized `<install_dir>/codex-chats-mcp-errors.log` (or your trusted `CODEX_CHATS_ERROR_LOG` path). A missing log is expected when calls succeed; success calls intentionally add nothing. Error records use a locally generated `server_instance_id`, a keyed digest rather than a raw peer request ID, and bounded tool-call correlation; stdio does not expose a real Codex conversation/session ID.
 
 Debug logging is opt-in. It has a hard 8 MiB cap, trims old complete records to about 6 MiB, and uses a cross-process lock while appending/trimming, so concurrent Codex sessions do not interleave unsafe writes. If locking is unavailable it fails closed. Logs contain bounded error metadata and redacted resource IDs only—never successes, message content, authentication, request/response bodies, or queries.
 

@@ -10,14 +10,20 @@ managed the same way.
 
 from __future__ import annotations
 
+import contextvars
+import hashlib
+import hmac
 import json
 import os
+import re
+import secrets
 import stat
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -52,6 +58,14 @@ CODEX_CHATS_DEBUG_LOG = "CODEX_CHATS_DEBUG_LOG"
 ERROR_LOG_FILENAME = "codex-chats-mcp-errors.log"
 ERROR_LOG_MAX_BYTES = 8 * 1024 * 1024
 ERROR_LOG_RETAIN_BYTES = 6 * 1024 * 1024
+SERVER_INSTANCE_ID = secrets.token_hex(16)
+_MCP_REQUEST_ID_HASH_KEY = secrets.token_bytes(32)
+_MCP_REQUEST_ID_MAX_LENGTH = 64
+_UNKNOWN_CORRELATION = "unknown"
+_SAFE_CORRELATION_TOKEN = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$", re.ASCII
+)
+_SAFE_NUMERIC_REQUEST_ID = re.compile(r"^-?[0-9]{1,64}$", re.ASCII)
 
 _ERROR_LOG_EVENTS = frozenset({"retry_error", "terminal_error"})
 _ERROR_LOG_FIELDS = frozenset(
@@ -67,6 +81,9 @@ _ERROR_LOG_FIELDS = frozenset(
         "max_attempts",
         "retry_delay_seconds",
         "cf_ray",
+        "server_instance_id",
+        "mcp_request_id",
+        "tool_call",
     }
 )
 _ERROR_LOG_STRING_LIMITS = {
@@ -76,9 +93,94 @@ _ERROR_LOG_STRING_LIMITS = {
     "resource_id": 32,
     "error_type": 64,
     "cf_ray": 128,
+    "server_instance_id": 64,
+    "mcp_request_id": 64,
+    "tool_call": 64,
 }
 
-mcp = MCPServer("codex-chats")
+_MCP_ERROR_CONTEXT: contextvars.ContextVar[tuple[str, str]] = contextvars.ContextVar(
+    "codex_chats_mcp_error_context",
+    default=(_UNKNOWN_CORRELATION, _UNKNOWN_CORRELATION),
+)
+
+
+class _MCPRequestIdDigest(str):
+    """Marker for a digest produced by this process, not peer input."""
+
+
+def _safe_correlation_token(value: object) -> str | None:
+    """Accept only short, ASCII correlation tokens from the MCP peer."""
+    if type(value) is int:
+        try:
+            token = str(value)
+        except (OverflowError, ValueError):
+            return None
+    elif type(value) is str:
+        token = value
+    else:
+        return None
+    if len(token) > 64 or _SAFE_CORRELATION_TOKEN.fullmatch(token) is None:
+        return None
+    return token
+
+
+def _safe_mcp_request_id(value: object) -> str:
+    if isinstance(value, _MCPRequestIdDigest):
+        return value
+    if type(value) is int:
+        try:
+            token = str(value)
+        except (OverflowError, ValueError):
+            return _UNKNOWN_CORRELATION
+        if _SAFE_NUMERIC_REQUEST_ID.fullmatch(token) is None:
+            return _UNKNOWN_CORRELATION
+    elif type(value) is str:
+        token = value
+    else:
+        return _UNKNOWN_CORRELATION
+    if not token or len(token) > _MCP_REQUEST_ID_MAX_LENGTH:
+        return _UNKNOWN_CORRELATION
+    try:
+        encoded = token.encode("utf-8")
+    except UnicodeError:
+        return _UNKNOWN_CORRELATION
+    digest = hmac.new(_MCP_REQUEST_ID_HASH_KEY, encoded, hashlib.sha256).hexdigest()
+    return _MCPRequestIdDigest(f"hash:{digest}")
+
+
+def _safe_tool_call(value: object) -> str:
+    if type(value) is not str:
+        return _UNKNOWN_CORRELATION
+    return _safe_correlation_token(value) or _UNKNOWN_CORRELATION
+
+
+async def _capture_mcp_error_context(ctx: Any, call_next: Any) -> Any:
+    """Capture safe tools/call metadata for synchronous downstream requests."""
+    request_id = _UNKNOWN_CORRELATION
+    tool_call = _UNKNOWN_CORRELATION
+    if getattr(ctx, "method", None) == "tools/call":
+        params = getattr(ctx, "params", None)
+        name = params.get("name") if isinstance(params, Mapping) else None
+        request_id = _safe_mcp_request_id(getattr(ctx, "request_id", None))
+        tool_call = _safe_tool_call(name)
+
+    token = _MCP_ERROR_CONTEXT.set((request_id, tool_call))
+    try:
+        return await call_next(ctx)
+    finally:
+        _MCP_ERROR_CONTEXT.reset(token)
+
+
+def _error_correlation_fields() -> dict[str, str]:
+    request_id, tool_call = _MCP_ERROR_CONTEXT.get()
+    return {
+        "server_instance_id": SERVER_INSTANCE_ID,
+        "mcp_request_id": request_id,
+        "tool_call": tool_call,
+    }
+
+
+mcp = MCPServer("codex-chats", middleware=[_capture_mcp_error_context])
 
 
 def _resolve_error_log_path() -> Path | None:
@@ -205,6 +307,7 @@ def _record_error_event(
         "error_type": error_type,
         "attempt": attempt,
         "max_attempts": max_attempts,
+        **_error_correlation_fields(),
     }
     if status is not None:
         fields["status"] = status
@@ -245,6 +348,15 @@ def _safe_error_fields(fields: dict[str, Any]) -> dict[str, Any] | None:
         value = fields.get(key)
         if value is None:
             continue
+        if key == "server_instance_id":
+            safe[key] = SERVER_INSTANCE_ID
+            continue
+        if key == "mcp_request_id":
+            safe[key] = _safe_mcp_request_id(value)
+            continue
+        if key == "tool_call":
+            safe[key] = _safe_correlation_token(value) or _UNKNOWN_CORRELATION
+            continue
         if key in _ERROR_LOG_STRING_LIMITS:
             if not isinstance(value, str):
                 continue
@@ -263,6 +375,9 @@ def _safe_error_fields(fields: dict[str, Any]) -> dict[str, Any] | None:
         elif key == "retry_delay_seconds":
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 safe[key] = value
+    safe.setdefault("server_instance_id", SERVER_INSTANCE_ID)
+    safe.setdefault("mcp_request_id", _UNKNOWN_CORRELATION)
+    safe.setdefault("tool_call", _UNKNOWN_CORRELATION)
     return safe
 
 
@@ -734,7 +849,8 @@ def list_chats(
         cursor = payload.get("cursor")
         if not cursor or not page:
             break
-    return {"ok": True, "count": len(items), "items": items[:max_results]}
+    items = items[:max_results]
+    return {"ok": True, "count": len(items), "items": items}
 
 
 @mcp.tool()
@@ -865,7 +981,8 @@ def list_conversations(max_results: int = 100, include_archived: bool = False) -
         total = payload.get("total")
         if isinstance(total, int) and offset >= total:
             break
-    return {"ok": True, "count": len(items), "items": items[:max_results]}
+    items = items[:max_results]
+    return {"ok": True, "count": len(items), "items": items}
 
 
 @mcp.tool()

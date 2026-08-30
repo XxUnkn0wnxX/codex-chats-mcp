@@ -131,7 +131,7 @@ CODEX_CHATS_DEBUG_LOG = "1"
 
 Without `CODEX_CHATS_DEBUG_LOG=1`, no log file is created. With an active virtual environment, the default path is `<active-venv>/codex-chats-mcp-errors.log`. Set `CODEX_CHATS_ERROR_LOG` to a trusted private regular-file path, or set it to `off` to disable the file.
 
-Only retry and terminal-error events are logged: never successes, message content, authentication, request/response bodies, queries, or full resource IDs. Entries contain normalized tool/endpoint/status/error/attempt/CF-Ray fields and redacted resource IDs. JSONL logs use POSIX mode `0600`, have a hard 8 MiB cap, and trim the oldest complete records to about 6 MiB when necessary. Writes are cross-process locked for concurrent connector sessions and fail closed if locking is unavailable. Custom paths must remain trusted private regular files.
+Only retry and terminal-error events are logged: never successes, message content, authentication, request/response bodies, queries, or full resource IDs. Entries contain a locally generated `server_instance_id`, a per-process keyed digest of the `mcp_request_id`, the bounded `tool_call`, normalized endpoint/status/error/attempt/CF-Ray fields, and redacted resource IDs. Raw peer request IDs are never written. The server-instance value groups records from one connector process; it is not a Codex conversation/session ID, because the stdio MCP transport does not expose one. JSONL logs use POSIX mode `0600`, have a hard 8 MiB cap, and trim the oldest complete records to about 6 MiB when necessary. Writes are cross-process locked for concurrent connector sessions and fail closed if locking is unavailable. Custom paths must remain trusted private regular files.
 
 ### MCP stdio startup
 

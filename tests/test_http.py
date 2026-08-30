@@ -1,15 +1,19 @@
-import json
+import asyncio
 import io
+import json
 import os
 import stat
 import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import unittest
 import urllib.error
 from pathlib import Path
 from unittest.mock import Mock, call, patch
+
+import anyio
 
 import codex_chats_mcp as server
 
@@ -468,7 +472,292 @@ class HTTPTransportTest(unittest.TestCase):
                 self.mock_error_log.reset_mock()
 
 
+class ListingToolTest(unittest.TestCase):
+    def test_list_chats_count_matches_items_when_page_overshoots_max_results(self) -> None:
+        page_items = [
+            {"id": "task-1", "title": "First"},
+            {"id": "task-2", "title": "Second"},
+            {"id": "task-3", "title": "Third"},
+        ]
+        with patch.object(
+            server,
+            "_list_page",
+            return_value=(200, {"items": page_items, "cursor": None}),
+        ) as list_page:
+            result = server.list_chats(task_filter="all", max_results=2)
+
+        list_page.assert_called_once_with("all", None)
+        self.assertEqual(result["count"], 2)
+        self.assertEqual([item["id"] for item in result["items"]], ["task-1", "task-2"])
+        self.assertEqual(result["count"], len(result["items"]))
+
+    def test_list_conversations_count_matches_items_when_page_overshoots_max_results(
+        self,
+    ) -> None:
+        page_items = [
+            {"id": "conversation-1", "title": "First", "is_archived": False},
+            {"id": "conversation-2", "title": "Second", "is_archived": False},
+            {"id": "conversation-3", "title": "Third", "is_archived": False},
+        ]
+        with patch.object(
+            server,
+            "_request",
+            return_value=(200, {"items": page_items, "total": len(page_items)}),
+        ) as request:
+            result = server.list_conversations(max_results=2)
+
+        request.assert_called_once_with("GET", "/conversations?offset=0&limit=28&order=updated")
+        self.assertEqual(result["count"], 2)
+        self.assertEqual(
+            [item["id"] for item in result["items"]],
+            ["conversation-1", "conversation-2"],
+        )
+        self.assertEqual(result["count"], len(result["items"]))
+
+
 class ErrorLogUtilityTest(unittest.TestCase):
+    def test_error_events_include_stable_process_correlation_metadata(self) -> None:
+        with patch.object(server, "_append_error_log") as append:
+            server._record_error_event(
+                "terminal_error",
+                "GET",
+                "/test",
+                error_type="HTTPError",
+                attempt=1,
+                max_attempts=1,
+            )
+            server._record_error_event(
+                "retry_error",
+                "GET",
+                "/test",
+                error_type="CloudflareHTML",
+                attempt=1,
+                max_attempts=3,
+                retry_delay_seconds=0.5,
+            )
+
+        events = [call.args[0] for call in append.call_args_list]
+        self.assertEqual(len(events), 2)
+        self.assertTrue(
+            {"server_instance_id", "mcp_request_id", "tool_call"}
+            <= events[0].keys()
+        )
+        self.assertEqual(
+            [event["server_instance_id"] for event in events],
+            [server.SERVER_INSTANCE_ID, server.SERVER_INSTANCE_ID],
+        )
+        self.assertEqual(
+            [(event["mcp_request_id"], event["tool_call"]) for event in events],
+            [("unknown", "unknown"), ("unknown", "unknown")],
+        )
+
+    def test_middleware_captures_safe_context_and_resets_after_tools_call(self) -> None:
+        contexts: list[dict[str, str]] = []
+
+        async def call_next(ctx: object) -> str:
+            contexts.append(server._error_correlation_fields())
+            return "ok"
+
+        async def exercise() -> tuple[str, dict[str, str]]:
+            result = await server._capture_mcp_error_context(
+                Mock(
+                    method="tools/call",
+                    request_id="mcp-42",
+                    params={"name": "list_conversations"},
+                ),
+                call_next,
+            )
+            after = server._error_correlation_fields()
+            return result, after
+
+        result, after = asyncio.run(exercise())
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(
+            contexts,
+            [
+                {
+                    "server_instance_id": server.SERVER_INSTANCE_ID,
+                    "mcp_request_id": server._safe_mcp_request_id("mcp-42"),
+                    "tool_call": "list_conversations",
+                }
+            ],
+        )
+        self.assertEqual(
+            after,
+            {
+                "server_instance_id": server.SERVER_INSTANCE_ID,
+                "mcp_request_id": "unknown",
+                "tool_call": "unknown",
+            },
+        )
+
+    def test_unsafe_middleware_values_and_direct_fields_cannot_leak(self) -> None:
+        marker = "PEER_SECRET_MARKER"
+        contexts: list[dict[str, str]] = []
+
+        async def call_next(ctx: object) -> str:
+            contexts.append(server._error_correlation_fields())
+            return "ok"
+
+        async def exercise() -> str:
+            return await server._capture_mcp_error_context(
+                Mock(
+                    method="tools/call",
+                    request_id=f"mcp/{marker}\n",
+                    params={"name": f"tool/{marker}\n"},
+                ),
+                call_next,
+            )
+
+        self.assertEqual(asyncio.run(exercise()), "ok")
+        self.assertEqual(
+            contexts,
+            [
+                {
+                    "server_instance_id": server.SERVER_INSTANCE_ID,
+                    "mcp_request_id": server._safe_mcp_request_id(
+                        f"mcp/{marker}\n"
+                    ),
+                    "tool_call": "unknown",
+                }
+            ],
+        )
+
+        safe = server._safe_error_fields(
+            {
+                "event": "terminal_error",
+                "server_instance_id": f"server/{marker}",
+                "mcp_request_id": f"request/{marker}",
+                "tool_call": f"tool/{marker}",
+            }
+        )
+        self.assertIsNotNone(safe)
+        assert safe is not None
+        self.assertEqual(safe["server_instance_id"], server.SERVER_INSTANCE_ID)
+        self.assertEqual(
+            safe["mcp_request_id"], server._safe_mcp_request_id(f"request/{marker}")
+        )
+        self.assertEqual(safe["tool_call"], "unknown")
+        self.assertNotIn(marker, repr(safe))
+
+    def test_string_request_ids_are_keyed_digests_and_never_logged_raw(self) -> None:
+        credential = "Bearer_credential-token-123"
+        same = server._safe_mcp_request_id(credential)
+        same_again = server._safe_mcp_request_id(credential)
+        different = server._safe_mcp_request_id(f"{credential}-different")
+
+        self.assertRegex(same, r"^hash:[0-9a-f]{64}$")
+        self.assertEqual(same, same_again)
+        self.assertNotEqual(same, different)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "errors.jsonl"
+            with patch.dict(os.environ, {server.CODEX_CHATS_DEBUG_LOG: "1"}):
+                server._append_error_log(
+                    {
+                        "event": "terminal_error",
+                        "mcp_request_id": credential,
+                    },
+                    log_path,
+                )
+
+            raw = log_path.read_text()
+            record = json.loads(raw)
+            self.assertEqual(record["mcp_request_id"], same)
+            self.assertNotIn(credential, raw)
+            self.assertNotIn(server._MCP_REQUEST_ID_HASH_KEY.hex(), raw)
+
+    def test_invalid_or_oversized_request_ids_are_unknown_without_hashing(self) -> None:
+        with patch.object(server.hmac, "new") as hmac_new:
+            self.assertEqual(
+                server._safe_mcp_request_id("x" * 65), "unknown"
+            )
+            hmac_new.assert_not_called()
+
+        self.assertEqual(server._safe_mcp_request_id(10**64), "unknown")
+        numeric = server._safe_mcp_request_id(123)
+        self.assertRegex(numeric, r"^hash:[0-9a-f]{64}$")
+        self.assertEqual(numeric, server._safe_mcp_request_id(123))
+        self.assertNotEqual(numeric, "123")
+        self.assertEqual(server._safe_mcp_request_id(True), "unknown")
+        self.assertEqual(server._safe_mcp_request_id(object()), "unknown")
+
+    def test_overlapping_middleware_contexts_survive_anyio_sync_workers(self) -> None:
+        barrier = threading.Barrier(2)
+        observed: dict[str, dict[str, str]] = {}
+
+        async def call_next(ctx: object) -> dict[str, str]:
+            def read_context() -> dict[str, str]:
+                barrier.wait(timeout=10)
+                return server._error_correlation_fields()
+
+            return await anyio.to_thread.run_sync(read_context)
+
+        async def invoke(request_id: str, tool_name: str) -> None:
+            result = await server._capture_mcp_error_context(
+                Mock(
+                    method="tools/call",
+                    request_id=request_id,
+                    params={"name": tool_name},
+                ),
+                call_next,
+            )
+            observed[request_id] = result
+
+        async def exercise() -> None:
+            async with anyio.create_task_group() as task_group:
+                task_group.start_soon(invoke, "request-a", "list_chats")
+                task_group.start_soon(invoke, "request-b", "get_conversation")
+
+        anyio.run(exercise)
+
+        self.assertEqual(
+            observed,
+            {
+                "request-a": {
+                    "server_instance_id": server.SERVER_INSTANCE_ID,
+                    "mcp_request_id": server._safe_mcp_request_id("request-a"),
+                    "tool_call": "list_chats",
+                },
+                "request-b": {
+                    "server_instance_id": server.SERVER_INSTANCE_ID,
+                    "mcp_request_id": server._safe_mcp_request_id("request-b"),
+                    "tool_call": "get_conversation",
+                },
+            },
+        )
+        self.assertEqual(
+            server._error_correlation_fields(),
+            {
+                "server_instance_id": server.SERVER_INSTANCE_ID,
+                "mcp_request_id": "unknown",
+                "tool_call": "unknown",
+            },
+        )
+
+    def test_debug_off_record_error_event_does_not_open_log(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "errors.jsonl"
+            with patch.dict(
+                os.environ,
+                {
+                    server.CODEX_CHATS_DEBUG_LOG: "0",
+                    server.CODEX_CHATS_ERROR_LOG: str(log_path),
+                },
+            ), patch.object(server.os, "open") as open_mock:
+                server._record_error_event(
+                    "terminal_error",
+                    "GET",
+                    "/test",
+                    error_type="HTTPError",
+                    attempt=1,
+                    max_attempts=1,
+                )
+
+            open_mock.assert_not_called()
+            self.assertFalse(log_path.exists())
+
     def test_debug_gate_and_error_log_path_override_off_and_venv_default(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             explicit = Path(temp_dir) / "errors.jsonl"
