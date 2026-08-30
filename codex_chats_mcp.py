@@ -11,30 +11,526 @@ managed the same way.
 from __future__ import annotations
 
 import json
+import os
+import stat
+import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-from mcp.server.fastmcp import FastMCP
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - unavailable on some platforms
+    fcntl = None  # type: ignore[assignment]
+
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - unavailable on POSIX platforms
+    msvcrt = None  # type: ignore[assignment]
+
+from mcp.server.mcpserver import MCPServer
 
 AUTH_PATH = Path.home() / ".codex" / "auth.json"
 BASE_URL = "https://chatgpt.com/backend-api"
-USER_AGENT = "codex-chats-mcp/0.1"
+USER_AGENT = "codex-chats-mcp/0.1.2.dev1"
+USER_AGENT_ENV = "CODEX_CHATS_USER_AGENT"
+MAX_CLOUDFLARE_ATTEMPTS = 3
+CLOUDFLARE_RETRY_DELAYS = (0.5, 1.0)
+RETRYABLE_CLOUDFLARE_STATUSES = frozenset({403, 404})
+RESPONSE_DIAGNOSTIC_HEADERS = (
+    ("Retry-After", "retry_after"),
+    ("CF-Mitigated", "cf_mitigated"),
+    ("CF-Error-Type", "cf_error_type"),
+    ("CF-Error-Origin", "cf_error_origin"),
+)
+CODEX_CHATS_ERROR_LOG = "CODEX_CHATS_ERROR_LOG"
+CODEX_CHATS_DEBUG_LOG = "CODEX_CHATS_DEBUG_LOG"
+ERROR_LOG_FILENAME = "codex-chats-mcp-errors.log"
+ERROR_LOG_MAX_BYTES = 8 * 1024 * 1024
+ERROR_LOG_RETAIN_BYTES = 6 * 1024 * 1024
 
-mcp = FastMCP("codex-chats")
+_ERROR_LOG_EVENTS = frozenset({"retry_error", "terminal_error"})
+_ERROR_LOG_FIELDS = frozenset(
+    {
+        "event",
+        "operation",
+        "method",
+        "endpoint",
+        "resource_id",
+        "status",
+        "error_type",
+        "attempt",
+        "max_attempts",
+        "retry_delay_seconds",
+        "cf_ray",
+    }
+)
+_ERROR_LOG_STRING_LIMITS = {
+    "operation": 64,
+    "method": 16,
+    "endpoint": 128,
+    "resource_id": 32,
+    "error_type": 64,
+    "cf_ray": 128,
+}
+
+mcp = MCPServer("codex-chats")
+
+
+def _resolve_error_log_path() -> Path | None:
+    """Return the private error-log path, or None when logging is disabled."""
+    if not _debug_logging_enabled():
+        return None
+    override = os.environ.get(CODEX_CHATS_ERROR_LOG, "").strip()
+    if override:
+        if override.lower() == "off":
+            return None
+        return Path(override).expanduser()
+    if sys.prefix != sys.base_prefix:
+        return Path(sys.prefix) / ERROR_LOG_FILENAME
+    return None
+
+
+def _debug_logging_enabled() -> bool:
+    return os.environ.get(CODEX_CHATS_DEBUG_LOG, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _redact_resource_id(resource_id: object) -> str:
+    """Keep only small first/last fragments of a resource identifier."""
+    value = str(resource_id)
+    if len(value) <= 4:
+        return "*" * len(value)
+    if len(value) <= 8:
+        return f"{value[:2]}...{value[-2:]}"
+    return f"{value[:4]}...{value[-4:]}"
+
+
+def _safe_error_context(
+    method: str, path: str, body: dict | None = None
+) -> dict[str, str | None]:
+    """Infer safe operation metadata without retaining query or body values."""
+    try:
+        route = urllib.parse.urlsplit(path).path
+        segments = [urllib.parse.unquote(part) for part in route.split("/") if part]
+    except (TypeError, ValueError):
+        segments = []
+
+    verb = method.upper()
+    operation = "request"
+    endpoint = "/{resource}"
+    resource_id: str | None = None
+
+    if segments[:3] == ["wham", "tasks", "list"] and len(segments) == 3:
+        endpoint = "/wham/tasks/list"
+        operation = "list_chats"
+    elif len(segments) >= 3 and segments[:2] == ["wham", "tasks"]:
+        resource_id = _redact_resource_id(segments[2])
+        endpoint = "/wham/tasks/{id}"
+        action = segments[3] if len(segments) == 4 else ""
+        if action in {"archive", "unarchive"}:
+            endpoint += f"/{action}"
+            operation = f"{action}_chat"
+        elif verb == "GET":
+            operation = "get_chat"
+        elif verb == "DELETE":
+            operation = "delete_chat"
+    elif segments and segments[0] == "conversations":
+        if len(segments) == 1:
+            endpoint = "/conversations"
+            if verb == "GET":
+                operation = "list_conversations"
+            elif verb == "PATCH" and isinstance(body, dict):
+                keys = set(body)
+                if "is_visible" in keys:
+                    operation = "delete_all_conversations"
+        else:
+            endpoint = "/conversations/{id}"
+            resource_id = _redact_resource_id(segments[1])
+            if verb == "GET":
+                operation = "get_conversation"
+            elif verb == "PATCH" and isinstance(body, dict):
+                keys = set(body)
+                if "title" in keys:
+                    operation = "rename_conversation"
+                elif "is_visible" in keys:
+                    operation = "delete_conversation"
+                elif "is_archived" in keys:
+                    operation = (
+                        "archive_conversation"
+                        if body.get("is_archived")
+                        else "unarchive_conversation"
+                    )
+    elif len(segments) >= 2 and segments[0] == "conversation":
+        endpoint = "/conversation/{id}"
+        resource_id = _redact_resource_id(segments[1])
+        if verb == "GET":
+            operation = "get_conversation"
+    elif segments and segments[0] in {"wham", "conversation"}:
+        endpoint = f"/{segments[0]}"
+
+    return {
+        "operation": operation,
+        "endpoint": endpoint,
+        "resource_id": resource_id,
+    }
+
+
+def _record_error_event(
+    event: str,
+    method: str,
+    path: str,
+    body: dict | None = None,
+    *,
+    status: int | None = None,
+    error_type: str,
+    attempt: int,
+    max_attempts: int,
+    retry_delay_seconds: float | None = None,
+    cf_ray: str | None = None,
+) -> None:
+    """Build a safe failure event and send it to the private error log."""
+    fields: dict[str, Any] = {
+        "event": event,
+        **_safe_error_context(method, path, body),
+        "method": method.upper(),
+        "error_type": error_type,
+        "attempt": attempt,
+        "max_attempts": max_attempts,
+    }
+    if status is not None:
+        fields["status"] = status
+    if retry_delay_seconds is not None:
+        fields["retry_delay_seconds"] = retry_delay_seconds
+    if cf_ray is not None:
+        fields["cf_ray"] = cf_ray or "unknown"
+    _append_error_log(fields, warn_on_failure=True)
+
+
+def _error_log_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace(
+        "+00:00", "Z"
+    )
+
+
+def _generic_error_log_warning() -> None:
+    try:
+        print(
+            "codex-chats-mcp: unable to write the private error log; "
+            "failure details were not recorded",
+            file=sys.stderr,
+        )
+    except Exception:
+        pass
+
+
+def _safe_error_fields(fields: dict[str, Any]) -> dict[str, Any] | None:
+    """Copy only primitive, bounded, non-sensitive event fields."""
+    if not isinstance(fields, dict):
+        return None
+    event = fields.get("event")
+    if event not in _ERROR_LOG_EVENTS:
+        return None
+
+    safe: dict[str, Any] = {"event": event}
+    for key in _ERROR_LOG_FIELDS - {"event"}:
+        value = fields.get(key)
+        if value is None:
+            continue
+        if key in _ERROR_LOG_STRING_LIMITS:
+            if not isinstance(value, str):
+                continue
+            if key == "endpoint":
+                try:
+                    value = urllib.parse.urlsplit(value).path or "/{resource}"
+                except (TypeError, ValueError):
+                    value = "/{resource}"
+                value = value.split("?", 1)[0]
+            elif key == "resource_id":
+                value = _redact_resource_id(value)
+            safe[key] = value[: _ERROR_LOG_STRING_LIMITS[key]]
+        elif key in {"status", "attempt", "max_attempts"}:
+            if isinstance(value, int) and not isinstance(value, bool):
+                safe[key] = value
+        elif key == "retry_delay_seconds":
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                safe[key] = value
+    return safe
+
+
+def _complete_jsonl_suffix(data: bytes, target_bytes: int) -> bytes:
+    """Return a suffix of complete lines no larger than target_bytes."""
+    if target_bytes <= 0:
+        return b""
+    lines = [line for line in data.splitlines(keepends=True) if line.endswith(b"\n")]
+    retained: list[bytes] = []
+    retained_bytes = 0
+    for line in reversed(lines):
+        if retained_bytes + len(line) > target_bytes:
+            break
+        retained.append(line)
+        retained_bytes += len(line)
+    retained.reverse()
+    return b"".join(retained)
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError("short error-log write")
+        view = view[written:]
+
+
+def _lock_error_log(fd: int) -> str | None:
+    """Acquire an advisory lock with a portable file-position-preserving API."""
+    if fcntl is not None:
+        position: int | None = None
+        acquired = False
+        try:
+            position = os.lseek(fd, 0, os.SEEK_CUR)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            acquired = True
+            os.lseek(fd, position, os.SEEK_SET)
+            return "fcntl"
+        except OSError:
+            if acquired:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            try:
+                if position is not None:
+                    os.lseek(fd, position, os.SEEK_SET)
+            except OSError:
+                pass
+    if msvcrt is not None:
+        position = None
+        acquired = False
+        try:
+            position = os.lseek(fd, 0, os.SEEK_CUR)
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            acquired = True
+            os.lseek(fd, position, os.SEEK_SET)
+            return "msvcrt"
+        except OSError:
+            if acquired:
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+            try:
+                if position is not None:
+                    os.lseek(fd, position, os.SEEK_SET)
+            except OSError:
+                pass
+    return None
+
+
+def _unlock_error_log(fd: int, lock_kind: str | None) -> None:
+    if lock_kind == "fcntl" and fcntl is not None:
+        position: int | None = None
+        try:
+            position = os.lseek(fd, 0, os.SEEK_CUR)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        finally:
+            if position is not None:
+                try:
+                    os.lseek(fd, position, os.SEEK_SET)
+                except OSError:
+                    pass
+    elif lock_kind == "msvcrt" and msvcrt is not None:
+        position = None
+        try:
+            position = os.lseek(fd, 0, os.SEEK_CUR)
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        finally:
+            if position is not None:
+                try:
+                    os.lseek(fd, position, os.SEEK_SET)
+                except OSError:
+                    pass
+
+
+def _set_error_log_permissions(fd: int, path: Path) -> None:
+    fchmod = getattr(os, "fchmod", None)
+    if callable(fchmod):
+        try:
+            fchmod(fd, 0o600)
+            return
+        except OSError:
+            pass
+    chmod = getattr(os, "chmod", None)
+    if callable(chmod):
+        try:
+            chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
+
+
+def _append_error_log(
+    fields: dict[str, Any],
+    path: str | Path | None = None,
+    *,
+    warn_on_failure: bool = False,
+) -> None:
+    """Append one safe failure event as JSONL without ever raising."""
+    try:
+        if not _debug_logging_enabled():
+            return
+        safe = _safe_error_fields(fields)
+        if safe is None:
+            return
+        log_path = Path(path).expanduser() if path is not None else _resolve_error_log_path()
+        if log_path is None:
+            return
+        payload = {"timestamp": _error_log_timestamp(), **safe}
+        line = (json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n").encode(
+            "utf-8"
+        )
+        max_bytes = ERROR_LOG_MAX_BYTES
+        retain_bytes = ERROR_LOG_RETAIN_BYTES
+        if len(line) > max_bytes:
+            if warn_on_failure:
+                _generic_error_log_warning()
+            return
+
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        flags = (
+            os.O_RDWR
+            | os.O_APPEND
+            | os.O_CREAT
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        fd = os.open(log_path, flags, 0o600)
+        lock_kind: str | None = None
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError("private error-log target is not a regular file")
+            _set_error_log_permissions(fd, log_path)
+            lock_kind = _lock_error_log(fd)
+            if lock_kind is None:
+                raise OSError("private error-log lock unavailable")
+            current_size = os.fstat(fd).st_size
+            if current_size + len(line) > max_bytes:
+                os.lseek(fd, 0, os.SEEK_SET)
+                existing = os.read(fd, current_size)
+                retained = _complete_jsonl_suffix(existing, retain_bytes)
+                while len(retained) + len(line) > max_bytes and retained:
+                    retained = _complete_jsonl_suffix(retained, len(retained) - 1)
+                os.ftruncate(fd, 0)
+                os.lseek(fd, 0, os.SEEK_SET)
+                _write_all(fd, retained + line)
+            else:
+                _write_all(fd, line)
+        finally:
+            _unlock_error_log(fd, lock_kind)
+            os.close(fd)
+    except Exception:
+        if warn_on_failure:
+            _generic_error_log_warning()
 
 
 def _auth_headers() -> dict[str, str]:
     data = json.loads(AUTH_PATH.read_text())
     tokens = data["tokens"]
+    user_agent = os.environ.get(USER_AGENT_ENV, "").strip() or USER_AGENT
     return {
         "Authorization": f"Bearer {tokens['access_token']}",
         "ChatGPT-Account-ID": tokens["account_id"],
-        "User-Agent": USER_AGENT,
+        "User-Agent": user_agent,
         "Accept": "application/json",
     }
+
+
+def _header_value(headers: object, name: str) -> str:
+    if headers is None:
+        return ""
+    get = getattr(headers, "get", None)
+    value = get(name) if callable(get) else None
+    if value is None:
+        items = getattr(headers, "items", lambda: ())()
+        value = next((item for key, item in items if str(key).lower() == name.lower()), "")
+    return str(value).strip()
+
+
+def _is_html_response(content_type: str, raw: str) -> bool:
+    leading = raw.lstrip().lower()
+    return "html" in content_type.lower() or leading.startswith(
+        ("<!doctype html", "<html", "<head", "<body")
+    )
+
+
+def _is_cloudflare_response(server: str, cf_ray: str) -> bool:
+    return server.lower() == "cloudflare" or bool(cf_ray)
+
+
+def _response_diagnostics(headers: object) -> dict[str, str]:
+    diagnostics: dict[str, str] = {}
+    for header_name, payload_key in RESPONSE_DIAGNOSTIC_HEADERS:
+        value = _header_value(headers, header_name)
+        if value:
+            diagnostics[payload_key] = value
+    return diagnostics
+
+
+def _html_error_payload(
+    content_type: str, server: str, cf_ray: str, headers: object
+) -> dict[str, str | int]:
+    cloudflare = _is_cloudflare_response(server, cf_ray)
+    payload: dict[str, str | int] = {
+        "detail": (
+            "Cloudflare returned HTML instead of the expected JSON response."
+            if cloudflare
+            else "The server returned HTML instead of the expected JSON response."
+        ),
+        "response_type": "html",
+        "content_type": content_type or "unknown",
+        "server": server or "unknown",
+        "cf_ray": cf_ray or "unknown",
+    }
+    payload.update(_response_diagnostics(headers))
+    return payload
+
+
+def _transport_error(error: Exception) -> dict[str, str]:
+    return {
+        "detail": "Request failed before receiving an HTTP response.",
+        "error_type": type(error).__name__,
+    }
+
+
+def _should_retry_cloudflare_html(
+    method: str,
+    status: int,
+    content_type: str,
+    raw: str,
+    server: str,
+    cf_ray: str,
+) -> bool:
+    retryable_status = status in RETRYABLE_CLOUDFLARE_STATUSES or 500 <= status <= 599
+    return (
+        method.upper() == "GET"
+        and retryable_status
+        and _is_html_response(content_type, raw)
+        and _is_cloudflare_response(server, cf_ray)
+    )
 
 
 def _request(method: str, path: str, body: dict | None = None) -> tuple[int, dict | str]:
@@ -44,19 +540,153 @@ def _request(method: str, path: str, body: dict | None = None) -> tuple[int, dic
     if data is not None:
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            raw = resp.read().decode(errors="replace")
-            try:
-                return resp.status, json.loads(raw) if raw else {}
-            except json.JSONDecodeError:
-                return resp.status, raw
-    except urllib.error.HTTPError as e:
-        raw = e.read().decode(errors="replace")
+    for attempt in range(1, MAX_CLOUDFLARE_ATTEMPTS + 1):
         try:
-            return e.code, json.loads(raw) if raw else {"detail": str(e)}
-        except json.JSONDecodeError:
-            return e.code, raw
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                raw = resp.read().decode(errors="replace")
+                content_type = _header_value(resp.headers, "Content-Type")
+                server = _header_value(resp.headers, "Server")
+                cf_ray = _header_value(resp.headers, "CF-Ray")
+                if _is_html_response(content_type, raw):
+                    html_payload = _html_error_payload(
+                        content_type, server, cf_ray, resp.headers
+                    )
+                    if resp.status == 200:
+                        html_payload["upstream_status"] = resp.status
+                    # Normalize HTML interstitials to 502 so nominal 200 responses can retry.
+                    effective_status = 502
+                    retryable = _should_retry_cloudflare_html(
+                        method, effective_status, content_type, raw, server, cf_ray
+                    )
+                    if retryable and attempt < MAX_CLOUDFLARE_ATTEMPTS:
+                        delay = CLOUDFLARE_RETRY_DELAYS[attempt - 1]
+                        _record_error_event(
+                            "retry_error",
+                            method,
+                            path,
+                            body,
+                            status=resp.status,
+                            error_type="CloudflareHTML",
+                            attempt=attempt,
+                            max_attempts=MAX_CLOUDFLARE_ATTEMPTS,
+                            retry_delay_seconds=delay,
+                            cf_ray=cf_ray or "unknown",
+                        )
+                        time.sleep(delay)
+                        continue
+                    html_payload["attempts"] = attempt
+                    _record_error_event(
+                        "terminal_error",
+                        method,
+                        path,
+                        body,
+                        status=resp.status,
+                        error_type="CloudflareHTML"
+                        if _is_cloudflare_response(server, cf_ray)
+                        else "HTMLResponse",
+                        attempt=attempt,
+                        max_attempts=MAX_CLOUDFLARE_ATTEMPTS if retryable else 1,
+                        cf_ray=(cf_ray or "unknown")
+                        if _is_cloudflare_response(server, cf_ray)
+                        else None,
+                    )
+                    return effective_status, html_payload
+                try:
+                    return resp.status, json.loads(raw) if raw else {}
+                except json.JSONDecodeError:
+                    return resp.status, raw
+        except urllib.error.HTTPError as e:
+            status = e.code
+            response_headers = e.headers
+            error_detail = str(e)
+            try:
+                raw = e.read().decode(errors="replace")
+            finally:
+                e.close()
+            content_type = _header_value(response_headers, "Content-Type")
+            server = _header_value(response_headers, "Server")
+            cf_ray = _header_value(response_headers, "CF-Ray")
+            if _is_html_response(content_type, raw):
+                html_payload = _html_error_payload(
+                    content_type, server, cf_ray, response_headers
+                )
+                retryable = _should_retry_cloudflare_html(
+                    method, status, content_type, raw, server, cf_ray
+                )
+                if retryable and attempt < MAX_CLOUDFLARE_ATTEMPTS:
+                    delay = CLOUDFLARE_RETRY_DELAYS[attempt - 1]
+                    _record_error_event(
+                        "retry_error",
+                        method,
+                        path,
+                        body,
+                        status=status,
+                        error_type="CloudflareHTML",
+                        attempt=attempt,
+                        max_attempts=MAX_CLOUDFLARE_ATTEMPTS,
+                        retry_delay_seconds=delay,
+                        cf_ray=cf_ray or "unknown",
+                    )
+                    time.sleep(delay)
+                    continue
+                html_payload["attempts"] = attempt
+                _record_error_event(
+                    "terminal_error",
+                    method,
+                    path,
+                    body,
+                    status=status,
+                    error_type="CloudflareHTML"
+                    if _is_cloudflare_response(server, cf_ray)
+                    else "HTMLResponse",
+                    attempt=attempt,
+                    max_attempts=MAX_CLOUDFLARE_ATTEMPTS if retryable else 1,
+                    cf_ray=(cf_ray or "unknown")
+                    if _is_cloudflare_response(server, cf_ray)
+                    else None,
+                )
+                return status, html_payload
+            _record_error_event(
+                "terminal_error",
+                method,
+                path,
+                body,
+                status=status,
+                error_type="HTTPError",
+                attempt=attempt,
+                max_attempts=1,
+                cf_ray=cf_ray or None,
+            )
+            try:
+                payload = json.loads(raw) if raw else {"detail": error_detail}
+            except json.JSONDecodeError:
+                return status, raw
+            if isinstance(payload, dict):
+                for key, value in _response_diagnostics(response_headers).items():
+                    payload.setdefault(key, value)
+            return status, payload
+        except TimeoutError as e:
+            _record_error_event(
+                "terminal_error",
+                method,
+                path,
+                body,
+                error_type=type(e).__name__,
+                attempt=attempt,
+                max_attempts=1,
+            )
+            return 0, _transport_error(e)
+        except urllib.error.URLError as e:
+            _record_error_event(
+                "terminal_error",
+                method,
+                path,
+                body,
+                error_type=type(e).__name__,
+                attempt=attempt,
+                max_attempts=1,
+            )
+            return 0, _transport_error(e)
 
 
 PAGE_LIMIT = 20  # server-side cap on /wham/tasks/list
