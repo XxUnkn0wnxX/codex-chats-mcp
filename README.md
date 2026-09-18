@@ -41,13 +41,20 @@ Or with `uv`:
 uv tool install "codex-chats-mcp-v2==0.2.0"
 ```
 
-### Maintained fork source (clone `develop`, editable local HEAD)
+### Maintained fork source (clone `develop`, standard install)
 
 ```zsh
 git clone --branch develop https://github.com/XxUnkn0wnxX/codex-chats-mcp
 cd codex-chats-mcp
 python3 -m venv .venv
 source .venv/bin/activate
+python -m pip install .
+```
+
+For an editable local checkout while developing, use the same fresh environment
+and opt in explicitly:
+
+```zsh
 python -m pip install -e .
 ```
 
@@ -143,7 +150,8 @@ Terminal HTML errors are sanitized: raw pages are not returned. The outer tool r
 
 PyPI packages and CI release artifacts are built with debug logging disabled. Setting `CODEX_CHATS_DEBUG_LOG=1` cannot enable it in a release build.
 
-For local testing, first install the source checkout's dependencies as described above, then explicitly build and install a debug wheel in that virtual environment:
+For local testing, first install the source checkout normally as described above,
+then explicitly build and install a debug wheel in that virtual environment:
 
 ```zsh
 CODEX_CHATS_BUILD_DEBUG=1 python -m pip install --no-cache-dir --force-reinstall --no-deps .

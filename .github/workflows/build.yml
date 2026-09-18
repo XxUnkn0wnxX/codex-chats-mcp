@@ -62,9 +62,9 @@ jobs:
           test_cwd="$RUNNER_TEMP/codex-chats-release-cwd"
           python -m venv "$venv_dir"
           venv_python="$venv_dir/bin/python"
-          "$venv_python" -m pip install "mcp[cli]==2.1.1"
-          "$venv_python" -m pip install --no-deps dist/*.whl
+          "$venv_python" -m pip install dist/*.whl
           "$venv_python" -m pip check
+          "$venv_python" -m pip list --format=freeze
           mkdir -p "$test_cwd"
           cd "$test_cwd"
           unset PYTHONPATH

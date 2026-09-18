@@ -36,19 +36,30 @@ Check coverage before creating temporary files:
 git check-ignore -v --no-index tmp/ AGENTS.md .venv/
 ```
 
-## 2. Install an editable checkout
+## 2. Install a source checkout
 
 Use a fresh directory and one isolated virtual environment per install method; choose one method rather than reusing an environment from another distribution. Do not co-install the upstream `codex-chats-mcp` distribution and this fork: they provide the same `codex_chats_mcp` module and `codex-chats-mcp` executable, so one installation can mask or overwrite the other.
 
-Pin MCP first, then install this project without letting its dependency range upgrade MCP:
+Install the source checkout normally so pip resolves the declared dependency
+range exactly as it would for a wheel or PyPI release. At the time of writing,
+that resolves MCP 2.2.0; do not add a manual SDK pin unless compatibility
+testing shows that the supported range must be narrowed:
 
 ```zsh
 set -euo pipefail
 python3.13 --version
 python3.13 -m venv .venv
 source .venv/bin/activate
-python -m pip install 'mcp[cli]==2.1.1'
-python -m pip install --no-deps -e .
+python -m pip install .
+python -m pip check
+python -m pip list --format=freeze
+```
+
+For an editable local checkout while developing, use the same dependency
+resolution in a fresh environment and opt in explicitly:
+
+```zsh
+python -m pip install -e .
 python -m pip check
 ```
 
@@ -74,7 +85,7 @@ python -m pip check
 git diff --check
 ```
 
-Full discovery includes the MCP v2 `initialize`/`list_tools` stdio handshake, which verifies 17 advertised tools. Running the executable directly waits for an MCP client on stdio; it is not an interactive test.
+Full discovery includes the MCP v2 `initialize`/`list_tools` stdio handshake, which verifies 17 advertised tools. A separate stdio test calls list/search/get tools using a fake backend and verifies serialization, middleware correlation, error responses, and argument validation; it blocks real authentication and network access. Running the executable directly waits for an MCP client on stdio; it is not an interactive test.
 
 Build and artifact-validation tooling has its own tests (not runtime dependencies):
 
@@ -98,9 +109,9 @@ This fail-fast subshell captures `repo_root` before changing directory, builds i
   test -f "$wheel_path"
   python3.13 -m venv "$build_dir/venv"
   venv_python="$build_dir/venv/bin/python"
-  "$venv_python" -m pip install 'mcp[cli]==2.1.1'
-  "$venv_python" -m pip install --no-deps "$wheel_path"
+  "$venv_python" -m pip install "$wheel_path"
   "$venv_python" -m pip check
+  "$venv_python" -m pip list --format=freeze
   empty_cwd="$build_dir/empty-cwd"
   mkdir "$empty_cwd"
   (
@@ -112,7 +123,7 @@ from pathlib import Path
 import codex_chats_mcp
 import mcp
 assert version("codex-chats-mcp-v2") == "0.2.0"
-assert version("mcp") == "2.1.1"
+print(f"mcp: {version('mcp')}")
 assert codex_chats_mcp.DEBUG_BUILD is False
 for name, module in (("codex_chats_mcp", codex_chats_mcp), ("mcp", mcp)):
     module_path = Path(module.__file__).resolve()
@@ -150,9 +161,9 @@ if [[ -e "$install_dir" ]]; then
   print -r -- "old installation saved at: $backup_dir/venv"
 fi
 python3.13 -m venv "$install_dir"
-"$install_dir/bin/python" -m pip install 'mcp[cli]==2.1.1'
-"$install_dir/bin/python" -m pip install --no-deps "$wheel_path"
+"$install_dir/bin/python" -m pip install "$wheel_path"
 "$install_dir/bin/python" -m pip check
+"$install_dir/bin/python" -m pip list --format=freeze
 print -r -- "Codex command: $install_dir/bin/codex-chats-mcp"
 ```
 
@@ -203,7 +214,7 @@ Debug logging requires both a debug wheel and runtime opt-in. It has a hard 8 Mi
 
 The `Test` workflow runs on pushes to `develop` and `main`, and on pull requests targeting either branch, including documentation-only changes. Its matrix covers Linux with Python 3.10, 3.13, and 3.14, plus Windows and macOS with Python 3.13. Hosted macOS CI does not specifically test Big Sur.
 
-Each matrix entry builds a release-mode sdist and wheel, checks the package/README with `twine check --strict`, installs the wheel with exact MCP 2.1.1, checks dependencies and installed-module paths, compiles the code, and runs the full suite from an isolated directory. It also builds a separate debug wheel and checks both runtime opt-in states. Tests use fake authentication and a handshake/tool-list check, not live conversation requests. The live venv command above uses POSIX paths; Windows uses the venv's `Scripts` directory.
+Each matrix entry builds a release-mode sdist and wheel, checks the package/README with `twine check --strict`, installs the wheel with normal pip dependency resolution, records the resolved package versions, checks dependencies and installed-module paths, compiles the code, and runs the full suite from an isolated directory. At the time of writing, normal resolution selects MCP 2.2.0; the workflow tests the resolved SDK within the declared compatible range rather than forcing an exact SDK version. It also builds a separate debug wheel and checks both runtime opt-in states. Tests use fake authentication, a handshake/tool-list check, and synthetic stdio tool calls, not live conversation requests. The live venv command above uses POSIX paths; Windows uses the venv's `Scripts` directory.
 
 After all matrix entries pass, `Test` calls `Build packages` (`build.yml`) at the same commit. That workflow creates and verifies the final release-mode wheel and source archive, tests the final wheel, and retains them as the workflow's downloadable `dist` artifact for 14 days. Neither workflow creates a GitHub Release or uploads to PyPI; `develop` only receives tests and artifacts. Debug smoke-test wheels are never included in `dist`.
 

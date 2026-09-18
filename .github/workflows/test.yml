@@ -80,10 +80,10 @@ jobs:
             venv_python="$venv_dir/bin/python"
           fi
           "$venv_python" -m pip install --upgrade pip
-          "$venv_python" -m pip install "mcp[cli]==2.1.1"
           wheel=(dist/*.whl)
-          "$venv_python" -m pip install --no-deps "${wheel[@]}"
+          "$venv_python" -m pip install "${wheel[@]}"
           "$venv_python" -m pip check
+          "$venv_python" -m pip list --format=freeze
           tests_dir="$checkout_dir/tests"
           test_dir="$RUNNER_TEMP/codex-chats-mcp-test"
           mkdir -p "$test_dir"
