@@ -26,6 +26,8 @@ git check-ignore -v tmp .venv
 
 ## 2. Install an editable checkout
 
+Use a fresh directory and one isolated virtual environment per install method; choose one method rather than reusing an environment from another distribution. Do not co-install the upstream `codex-chats-mcp` distribution and this fork: they provide the same `codex_chats_mcp` module and `codex-chats-mcp` executable, so one installation can mask or overwrite the other.
+
 Pin MCP first, then install this project without letting its dependency range upgrade MCP:
 
 ```zsh
@@ -35,6 +37,16 @@ python3.13 -m venv .venv
 source .venv/bin/activate
 python -m pip install 'mcp[cli]==2.1.1'
 python -m pip install --no-deps -e .
+python -m pip check
+```
+
+For a fresh directory and separate virtual environment, install a snapshot of the current fork `develop` HEAD directly from Git instead of an editable checkout:
+
+```zsh
+set -euo pipefail
+python3.13 -m venv .venv
+source .venv/bin/activate
+python -m pip install git+https://github.com/XxUnkn0wnxX/codex-chats-mcp.git@develop
 python -m pip check
 ```
 
@@ -80,7 +92,7 @@ from importlib.metadata import version
 from pathlib import Path
 import codex_chats_mcp
 import mcp
-assert version("codex-chats-mcp") == "0.1.2.dev1"
+assert version("codex-chats-mcp-v2") == "0.2.0"
 assert version("mcp") == "2.1.1"
 for name, module in (("codex_chats_mcp", codex_chats_mcp), ("mcp", mcp)):
     module_path = Path(module.__file__).resolve()
@@ -145,10 +157,14 @@ Restart or reload Codex after changing the server: active sessions can retain an
 
 Debug logging is opt-in. It has a hard 8 MiB cap, trims old complete records to about 6 MiB, and uses a cross-process lock while appending/trimming, so concurrent Codex sessions do not interleave unsafe writes. If locking is unavailable it fails closed. Logs contain bounded error metadata and redacted resource IDs only—never successes, message content, authentication, request/response bodies, or queries.
 
-## 8. CI
+## 8. CI and the future PyPI release
 
 Keep the Linux and Windows CI matrix enabled. It builds and installs a wheel with exact MCP 2.1.1, checks dependencies, and runs the full suite from an isolated directory. The live venv command above uses POSIX paths; Windows uses the venv's `Scripts` directory.
 
-The normal `Test` workflow never publishes. The separate PyPI workflow is dormant until the repository variable `ENABLE_PYPI_PUBLISH=true` is set and a maintainer manually supplies the expected distribution name/version and confirms the dispatch.
+The normal `Test` workflow builds and tests only; it never publishes and needs no PyPI token.
 
-Before enabling it, configure a [PyPI Trusted Publisher](https://docs.pypi.org/trusted-publishers/adding-a-publisher/) for owner `XxUnkn0wnxX`, repository `codex-chats-mcp`, workflow `publish.yml`, and environment `pypi`. Publishing under the existing distribution name requires that project's owner to grant access; using a new name requires changing `project.name` and the version before dispatch.
+The separate `Publish to PyPI` workflow is dormant and may be used only for a manual `workflow_dispatch` from the `main` ref. Its owner gate must match `XxUnkn0wnxX/codex-chats-mcp`, the repository variable `ENABLE_PYPI_PUBLISH` must be exactly `true`, `confirm_publish` must be `true`, `expected_name` must be `codex-chats-mcp-v2`, and `expected_version` must match the package version (`0.2.0` for the first release). Keep the gate unset/disabled until the release prerequisites are complete.
+
+The build job creates an sdist and wheel, runs `twine check`, and tests the installed wheel offline in an isolated environment. Only after those checks pass does the separate publish job upload the retained artifacts through PyPI Trusted Publishing (OIDC); it does not use a long-lived PyPI token.
+
+Before the first fork release, create one pending PyPI Trusted Publisher registration for project `codex-chats-mcp-v2` using the [trusted-publisher project creation guide](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/). Set owner `XxUnkn0wnxX`, repository `codex-chats-mcp`, workflow `publish.yml`, and environment `pypi`; this pending registration creates the project on its first upload. See the [Trusted Publisher usage guide](https://docs.pypi.org/trusted-publishers/using-a-publisher/) for the registration details. Configure the GitHub `pypi` environment to restrict deployment to `main` and require a reviewer if available. Keep these setup steps as prerequisites before enabling the gate.

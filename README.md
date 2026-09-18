@@ -1,8 +1,8 @@
 # codex-chats-mcp
 
-[![PyPI version](https://img.shields.io/pypi/v/codex-chats-mcp.svg)](https://pypi.org/project/codex-chats-mcp/)
-[![Python versions](https://img.shields.io/pypi/pyversions/codex-chats-mcp.svg)](https://pypi.org/project/codex-chats-mcp/)
-[![License: MIT](https://img.shields.io/pypi/l/codex-chats-mcp.svg)](https://github.com/XxUnkn0wnxX/codex-chats-mcp/blob/main/LICENSE)
+[![PyPI version](https://img.shields.io/pypi/v/codex-chats-mcp-v2.svg)](https://pypi.org/project/codex-chats-mcp-v2/)
+[![Python versions](https://img.shields.io/pypi/pyversions/codex-chats-mcp-v2.svg)](https://pypi.org/project/codex-chats-mcp-v2/)
+[![License: MIT](https://img.shields.io/pypi/l/codex-chats-mcp-v2.svg)](https://github.com/XxUnkn0wnxX/codex-chats-mcp/blob/main/LICENSE)
 
 An unofficial MCP server for listing, searching, archiving, renaming, exporting, and deleting ChatGPT conversations and Codex Cloud tasks from MCP-compatible clients.
 
@@ -12,25 +12,33 @@ The current source line requires the MCP Python SDK v2: `mcp[cli]>=2.1.1,<3`.
 
 ## Release status
 
-- The latest published PyPI release is `0.1.1`.
-- The maintained fork source build is `0.1.2.dev1` and is not published to PyPI.
+- The existing PyPI project `codex-chats-mcp` is the upstream distribution, not this maintained fork.
+- The first fork release is planned as `codex-chats-mcp-v2` version `0.2.0`; it has not been published yet.
+- The distribution name changes for this fork, while the Python module `codex_chats_mcp` and console command `codex-chats-mcp` remain unchanged.
+- The PyPI and `uv` commands below work after that publication. The source and Git commands work from the maintained fork's `develop` branch now.
 - The PyPI workflow is retained for a future tested release but is disabled by default behind a repository-variable gate and manual confirmation. The normal `Test` workflow never publishes.
 
 ## Install
 
-### Published PyPI release (`0.1.1`)
+Use a fresh directory and separate isolated environment for each install method; choose one method rather than reusing an environment from another distribution. Do not co-install the upstream `codex-chats-mcp` distribution and this fork: they provide the same `codex_chats_mcp` module and `codex-chats-mcp` executable, so one installation can mask or overwrite the other.
+
+### Planned first fork PyPI release (`codex-chats-mcp-v2` 0.2.0)
+
+The first fork PyPI release has not been published yet. After publication, install the pinned release in a dedicated virtual environment:
 
 ```zsh
-python3 -m pip install codex-chats-mcp
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install "codex-chats-mcp-v2==0.2.0"
 ```
 
 Or with `uv`:
 
 ```zsh
-uv tool install codex-chats-mcp
+uv tool install "codex-chats-mcp-v2==0.2.0"
 ```
 
-### Maintained fork source (`0.1.2.dev1`)
+### Maintained fork source (clone `develop`, editable local HEAD)
 
 ```zsh
 git clone --branch develop https://github.com/XxUnkn0wnxX/codex-chats-mcp
@@ -38,6 +46,14 @@ cd codex-chats-mcp
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e .
+```
+
+For a fresh directory and separate virtual environment, install a snapshot of the current fork `develop` HEAD directly from Git:
+
+```zsh
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install git+https://github.com/XxUnkn0wnxX/codex-chats-mcp.git@develop
 ```
 
 ## Authentication
@@ -114,7 +130,7 @@ Every destructive bulk action (`delete_all_conversations`, `delete_all_archived`
 
 ### HTTP and Cloudflare responses
 
-The default User-Agent is the honest `codex-chats-mcp/0.1.2.dev1`. `CODEX_CHATS_USER_AGENT` can override it for diagnostics only; it does not bypass Cloudflare.
+The default User-Agent is the honest `codex-chats-mcp/0.2.0`. `CODEX_CHATS_USER_AGENT` can override it for diagnostics only; it does not bypass Cloudflare.
 
 Only Cloudflare-identified HTML on `GET` requests is retried: status 403, 404, or any 5xx, plus nominal HTTP 200 HTML, for three total attempts with 0.5s then 1.0s backoff. Cloudflare identification requires `Server: cloudflare` or a nonempty `CF-Ray` header. Mutations, 429 rate limits, JSON/auth errors, generic HTML, and transport errors are not retried.
 
@@ -139,7 +155,7 @@ Running `codex-chats-mcp` manually waits for an MCP client on stdio; it is not a
 
 ## Development
 
-See [DEVELOPMENT.md](DEVELOPMENT.md) for detailed source setup, tests, clean-wheel validation, and live injection guidance.
+See [DEVELOPMENT.md](https://github.com/XxUnkn0wnxX/codex-chats-mcp/blob/develop/DEVELOPMENT.md) for detailed source setup, tests, clean-wheel validation, and live injection guidance.
 
 ## License
 

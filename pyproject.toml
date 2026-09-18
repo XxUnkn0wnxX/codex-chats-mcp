@@ -3,8 +3,8 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "codex-chats-mcp"
-version = "0.1.2.dev1"
+name = "codex-chats-mcp-v2"
+version = "0.2.0"
 description = "MCP server to list, search, archive, rename, export, and delete ChatGPT conversations and Codex Cloud tasks."
 readme = "README.md"
 license = "MIT"

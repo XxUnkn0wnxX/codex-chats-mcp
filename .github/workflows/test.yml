@@ -4,6 +4,12 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
+env:
+  CODEX_CHATS_DEBUG_LOG: "0"
+
 jobs:
   test:
     name: ${{ matrix.os }} Python ${{ matrix.python-version }}

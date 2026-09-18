@@ -42,7 +42,7 @@ from mcp.server.mcpserver import MCPServer
 
 AUTH_PATH = Path.home() / ".codex" / "auth.json"
 BASE_URL = "https://chatgpt.com/backend-api"
-USER_AGENT = "codex-chats-mcp/0.1.2.dev1"
+USER_AGENT = "codex-chats-mcp/0.2.0"
 USER_AGENT_ENV = "CODEX_CHATS_USER_AGENT"
 MAX_CLOUDFLARE_ATTEMPTS = 3
 CLOUDFLARE_RETRY_DELAYS = (0.5, 1.0)
