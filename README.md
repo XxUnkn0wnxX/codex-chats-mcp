@@ -1,8 +1,9 @@
 # codex-chats-mcp
 
-[![PyPI version](https://img.shields.io/pypi/v/codex-chats-mcp-v2.svg)](https://pypi.org/project/codex-chats-mcp-v2/)
-[![Python versions](https://img.shields.io/pypi/pyversions/codex-chats-mcp-v2.svg)](https://pypi.org/project/codex-chats-mcp-v2/)
-[![License: MIT](https://img.shields.io/pypi/l/codex-chats-mcp-v2.svg)](https://github.com/XxUnkn0wnxX/codex-chats-mcp/blob/main/LICENSE)
+[![Develop tests and build](https://img.shields.io/github/actions/workflow/status/XxUnkn0wnxX/codex-chats-mcp/test.yml?branch=develop&label=tests%20%2B%20build)](https://github.com/XxUnkn0wnxX/codex-chats-mcp/actions/workflows/test.yml?query=branch%3Adevelop)
+[![PyPI: not published yet](https://img.shields.io/badge/PyPI-not_published_yet-lightgrey)](#release-status)
+[![Python: 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/XxUnkn0wnxX/codex-chats-mcp/blob/develop/pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/XxUnkn0wnxX/codex-chats-mcp/blob/main/LICENSE)
 
 An unofficial MCP server for listing, searching, archiving, renaming, exporting, and deleting ChatGPT conversations and Codex Cloud tasks from MCP-compatible clients.
 
@@ -17,6 +18,8 @@ The current source line requires the MCP Python SDK v2: `mcp[cli]>=2.1.1,<3`.
 - The distribution name changes for this fork, while the Python module `codex_chats_mcp` and console command `codex-chats-mcp` remain unchanged.
 - The PyPI and `uv` commands below work after that publication. The source and Git commands work from the maintained fork's `develop` branch now.
 - Publishing is disabled by default and requires a manually confirmed run from `main`, the repository enable flag, and passing Linux/Windows/macOS tests for that exact commit. Pushes, README edits, and version bumps do not automatically publish. The normal `Test` workflow never publishes.
+
+The tests/build badge tracks `develop` CI, including all three operating systems and the final release-artifact build. For local test and build commands, see the [development guide](https://github.com/XxUnkn0wnxX/codex-chats-mcp/blob/develop/DEVELOPMENT.md).
 
 ## Install
 
