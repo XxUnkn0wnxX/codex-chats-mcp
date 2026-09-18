@@ -112,7 +112,9 @@ def validate_distributions(
         require(metadata["Version"] == version, f"Wrong {label} version")
         require(metadata["Description-Content-Type"] == "text/markdown", f"Wrong {label} README format")
         require(bool(metadata["Summary"]), f"Missing {label} PyPI summary")
-        require(metadata.get_payload().strip() == expected_readme, f"Stale {label} README")
+        # Path.read_text() normalizes newlines; archive bytes retain CRLF on Windows.
+        packaged_readme = metadata.get_payload().replace("\r\n", "\n").replace("\r", "\n").strip()
+        require(packaged_readme == expected_readme, f"Stale {label} README")
     return version
 
 

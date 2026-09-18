@@ -68,6 +68,18 @@ class DistributionValidationTest(unittest.TestCase):
             "0.2.0",
         )
 
+    def test_equivalent_readme_line_endings_preserve_unicode(self) -> None:
+        readme = self.readme.read_text(encoding="utf-8")
+        for newline in ("\r\n", "\r"):
+            with self.subTest(newline=newline):
+                self._archives(readme=readme.replace("\n", newline))
+                self.assertEqual(
+                    validate_distributions(
+                        self.dist, self.readme, expected_version="0.2.0", release=True
+                    ),
+                    "0.2.0",
+                )
+
     def test_normalized_project_name(self) -> None:
         self._archives()
         self.assertEqual(validate_distributions(self.dist, self.readme, "codex_chats_mcp_v2"), "0.2.0")
