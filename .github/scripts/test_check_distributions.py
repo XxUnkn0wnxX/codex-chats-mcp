@@ -30,6 +30,11 @@ class DistributionValidationTest(unittest.TestCase):
         readme: str | None = None,
         summary: str = "An unofficial MCP server",
         content_type: str = "text/markdown",
+        uid: int = 0,
+        gid: int = 0,
+        uname: str = "root",
+        gname: str = "root",
+        pax_headers: dict[str, str] | None = None,
     ) -> None:
         body = readme if readme is not None else self.readme.read_text(encoding="utf-8")
 
@@ -49,6 +54,11 @@ class DistributionValidationTest(unittest.TestCase):
             ):
                 entry = tarfile.TarInfo(name)
                 entry.size = len(data)
+                entry.uid = uid
+                entry.gid = gid
+                entry.uname = uname
+                entry.gname = gname
+                entry.pax_headers = dict(pax_headers or {})
                 sdist.addfile(entry, io.BytesIO(data))
 
     def test_valid_release_preserves_unicode_readme(self) -> None:
@@ -111,6 +121,23 @@ class DistributionValidationTest(unittest.TestCase):
         (self.dist / "debug.whl").touch()
         with self.assertRaises(ValueError):
             validate_distributions(self.dist, self.readme)
+
+    def test_non_anonymous_sdist_ownership_and_pax_overrides_rejected(self) -> None:
+        cases = (
+            {"uid": 1},
+            {"gid": 1},
+            {"uname": "untrusted-owner"},
+            {"gname": "untrusted-group"},
+            {"pax_headers": {"uid": "1"}},
+            {"pax_headers": {"SCHILY.gid": "1"}},
+            {"pax_headers": {"LIBARCHIVE.uname": "untrusted-owner"}},
+            {"pax_headers": {"VENDOR.gname": "untrusted-group"}},
+        )
+        for kwargs in cases:
+            with self.subTest(kwargs=kwargs):
+                self._archives(**kwargs)
+                with self.assertRaises(ValueError):
+                    validate_distributions(self.dist, self.readme)
 
     def test_missing_archives_rejected(self) -> None:
         with self.assertRaises(ValueError):

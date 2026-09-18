@@ -35,3 +35,4 @@ py-modules = ["_codex_chats_build", "codex_chats_mcp"]
 [tool.setuptools.cmdclass]
 build_py = "build_support.BuildPy"
 editable_wheel = "build_support.EditableWheel"
+sdist = "build_support.Sdist"

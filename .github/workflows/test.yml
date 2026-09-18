@@ -63,7 +63,10 @@ jobs:
           python -m build
       - name: Check distributions
         shell: bash
-        run: twine check --strict dist/*
+        run: |
+          set -euo pipefail
+          python .github/scripts/check_distributions.py
+          python -m twine check --strict dist/*
       - name: Test installed wheel
         shell: bash
         run: |

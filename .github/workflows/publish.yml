@@ -1,4 +1,4 @@
-name: Publish to PyPI (disabled by default)
+name: Publish to PyPI
 
 on:
   workflow_dispatch:
@@ -31,7 +31,6 @@ jobs:
     if: >-
       ${{ github.repository == 'XxUnkn0wnxX/codex-chats-mcp' &&
           github.ref == 'refs/heads/main' &&
-          vars.ENABLE_PYPI_PUBLISH == 'true' &&
           inputs.confirm_publish == true }}
     uses: ./.github/workflows/test.yml
     with:
@@ -45,7 +44,6 @@ jobs:
     if: >-
       ${{ github.repository == 'XxUnkn0wnxX/codex-chats-mcp' &&
           github.ref == 'refs/heads/main' &&
-          vars.ENABLE_PYPI_PUBLISH == 'true' &&
           inputs.confirm_publish == true &&
           needs.build.result == 'success' }}
     runs-on: ubuntu-latest

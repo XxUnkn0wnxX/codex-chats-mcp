@@ -17,7 +17,7 @@ The current source line requires the MCP Python SDK v2: `mcp[cli]>=2.1.1,<3`.
 - The first fork release is planned as `codex-chats-mcp-v2` version `0.2.0`; it has not been published yet.
 - The distribution name changes for this fork, while the Python module `codex_chats_mcp` and console command `codex-chats-mcp` remain unchanged.
 - The PyPI and `uv` commands below work after that publication. The source and Git commands work from the maintained fork's `develop` branch now.
-- Publishing is disabled by default and requires a manually confirmed run from `main`, the repository enable flag, and passing Linux/Windows/macOS tests for that exact commit. Pushes, README edits, and version bumps do not automatically publish. The normal `Test` workflow never publishes.
+- Publishing is available without an extra enable-switch, but requires a manually confirmed run from `main` and passing Linux/Windows/macOS tests and artifact checks for that exact commit. Pushes, README edits, and version bumps do not automatically publish. The normal `Test` workflow never publishes.
 
 The tests/build badge tracks `develop` CI, including all three operating systems and the final release-artifact build. For local test and build commands, see the [development guide](https://github.com/XxUnkn0wnxX/codex-chats-mcp/blob/develop/DEVELOPMENT.md).
 

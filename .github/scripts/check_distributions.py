@@ -15,6 +15,8 @@ from packaging.version import Version
 
 PROJECT_NAME = "codex-chats-mcp-v2"
 BUILD_MODULE = "_codex_chats_build.py"
+ANONYMOUS_OWNER = "root"
+OWNERSHIP_PAX_FIELDS = frozenset({"uid", "gid", "uname", "gname"})
 
 
 def require(condition: bool, message: str) -> None:
@@ -41,6 +43,24 @@ def check_release_stamp(source: bytes) -> None:
     require(isinstance(value, ast.Constant) and value.value is False, "Debug artifacts cannot be released")
 
 
+def _is_ownership_pax_field(name: str) -> bool:
+    return name.lower().rsplit(".", 1)[-1] in OWNERSHIP_PAX_FIELDS
+
+
+def check_sdist_ownership(members: list[tarfile.TarInfo]) -> None:
+    """Require all source members to use the archive's canonical neutral owner."""
+    for member in members:
+        require(member.uid == member.gid == 0, f"Non-anonymous numeric ownership: {member.name}")
+        require(
+            member.uname == member.gname == ANONYMOUS_OWNER,
+            f"Non-anonymous named ownership: {member.name}",
+        )
+        require(
+            not any(_is_ownership_pax_field(name) for name in member.pax_headers),
+            f"Ownership PAX override: {member.name}",
+        )
+
+
 def validate_distributions(
     dist_dir: Path,
     readme: Path,
@@ -62,12 +82,14 @@ def validate_distributions(
         check_release_stamp(wheel.read(BUILD_MODULE))
 
     with tarfile.open(sdists[0], "r:gz") as sdist:
+        members = sdist.getmembers()
+        check_sdist_ownership(members)
         metadata_paths = [
-            member for member in sdist.getmembers()
+            member for member in members
             if len(Path(member.name).parts) == 2 and member.name.endswith("/PKG-INFO")
         ]
         build_paths = [
-            member for member in sdist.getmembers()
+            member for member in members
             if len(Path(member.name).parts) == 2 and member.name.endswith(f"/{BUILD_MODULE}")
         ]
         require(len(metadata_paths) == len(build_paths) == 1, "Missing or ambiguous sdist metadata/stamp")
@@ -103,7 +125,7 @@ def main() -> None:
     parser.add_argument("--release", action="store_true")
     args = parser.parse_args()
     version = validate_distributions(**vars(args))
-    print(f"Validated {PROJECT_NAME} {version}: release stamps, matching metadata and README")
+    print(f"Validated {PROJECT_NAME} {version}: anonymous ownership, release stamps, matching metadata and README")
 
 
 if __name__ == "__main__":
