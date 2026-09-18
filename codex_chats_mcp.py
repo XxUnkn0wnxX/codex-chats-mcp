@@ -28,6 +28,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+from _codex_chats_build import DEBUG_BUILD
+
 try:
     import fcntl
 except ImportError:  # pragma: no cover - unavailable on some platforms
@@ -198,7 +200,7 @@ def _resolve_error_log_path() -> Path | None:
 
 
 def _debug_logging_enabled() -> bool:
-    return os.environ.get(CODEX_CHATS_DEBUG_LOG, "").strip().lower() in {
+    return DEBUG_BUILD and os.environ.get(CODEX_CHATS_DEBUG_LOG, "").strip().lower() in {
         "1",
         "true",
         "yes",

@@ -516,6 +516,11 @@ class ListingToolTest(unittest.TestCase):
 
 
 class ErrorLogUtilityTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.debug_build = patch.object(server, "DEBUG_BUILD", True)
+        self.debug_build.start()
+        self.addCleanup(self.debug_build.stop)
+
     def test_error_events_include_stable_process_correlation_metadata(self) -> None:
         with patch.object(server, "_append_error_log") as append:
             server._record_error_event(
@@ -1015,6 +1020,7 @@ class ErrorLogUtilityTest(unittest.TestCase):
                 from pathlib import Path
                 import codex_chats_mcp as server
 
+                server.DEBUG_BUILD = True
                 server.ERROR_LOG_MAX_BYTES = 1200
                 server.ERROR_LOG_RETAIN_BYTES = 500
                 destination = Path(os.environ["CODEX_CHATS_ERROR_LOG"])

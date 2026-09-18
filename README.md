@@ -16,7 +16,7 @@ The current source line requires the MCP Python SDK v2: `mcp[cli]>=2.1.1,<3`.
 - The first fork release is planned as `codex-chats-mcp-v2` version `0.2.0`; it has not been published yet.
 - The distribution name changes for this fork, while the Python module `codex_chats_mcp` and console command `codex-chats-mcp` remain unchanged.
 - The PyPI and `uv` commands below work after that publication. The source and Git commands work from the maintained fork's `develop` branch now.
-- The PyPI workflow is retained for a future tested release but is disabled by default behind a repository-variable gate and manual confirmation. The normal `Test` workflow never publishes.
+- Publishing is disabled by default and requires a manually confirmed run from `main`, the repository enable flag, and passing Linux/Windows/macOS tests for that exact commit. Pushes, README edits, and version bumps do not automatically publish. The normal `Test` workflow never publishes.
 
 ## Install
 
@@ -136,16 +136,26 @@ Only Cloudflare-identified HTML on `GET` requests is retried: status 403, 404, o
 
 Terminal HTML errors are sanitized: raw pages are not returned. The outer tool response contains `status`; its payload uses `content_type`, `server`, `cf_ray`, and `attempts`, plus allowlisted retry-diagnostic fields where present.
 
-### Opt-in debug error logging
+### Source-only debug error logging
 
-Enable it explicitly in the MCP environment:
+PyPI packages and CI release artifacts are built with debug logging disabled. Setting `CODEX_CHATS_DEBUG_LOG=1` cannot enable it in a release build.
+
+For local testing, first install the source checkout's dependencies as described above, then explicitly build and install a debug wheel in that virtual environment:
+
+```zsh
+CODEX_CHATS_BUILD_DEBUG=1 python -m pip install --no-cache-dir --force-reinstall --no-deps .
+```
+
+Debug builds are not editable installs: rebuild after source changes. The build flag defaults to `0` and accepts only `0` or `1`. An editable install stays in release mode and rejects a debug-build request.
+
+Then enable logging explicitly in the MCP environment:
 
 ```toml
 [mcp_servers.codex-chats.env]
 CODEX_CHATS_DEBUG_LOG = "1"
 ```
 
-Without `CODEX_CHATS_DEBUG_LOG=1`, no log file is created. With an active virtual environment, the default path is `<active-venv>/codex-chats-mcp-errors.log`. Set `CODEX_CHATS_ERROR_LOG` to a trusted private regular-file path, or set it to `off` to disable the file.
+Both the debug build and runtime opt-in are required; otherwise no diagnostic log file is created. With an active virtual environment, the default path is `<active-venv>/codex-chats-mcp-errors.log`. Set `CODEX_CHATS_ERROR_LOG` to a trusted private regular-file path, or set it to `off` to disable the file.
 
 Only retry and terminal-error events are logged: never successes, message content, authentication, request/response bodies, queries, or full resource IDs. Entries contain a locally generated `server_instance_id`, a per-process keyed digest of the `mcp_request_id`, the bounded `tool_call`, normalized endpoint/status/error/attempt/CF-Ray fields, and redacted resource IDs. Raw peer request IDs are never written. The server-instance value groups records from one connector process; it is not a Codex conversation/session ID, because the stdio MCP transport does not expose one. JSONL logs use POSIX mode `0600`, have a hard 8 MiB cap, and trim the oldest complete records to about 6 MiB when necessary. Writes are cross-process locked for concurrent connector sessions and fail closed if locking is unavailable. Custom paths must remain trusted private regular files.
 

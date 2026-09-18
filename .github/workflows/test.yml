@@ -2,18 +2,40 @@ name: Test
 
 on:
   push:
+    branches:
+      - develop
+      - main
   pull_request:
+    branches:
+      - develop
+      - main
+  workflow_call:
+    inputs:
+      expected_name:
+        type: string
+        required: false
+        default: codex-chats-mcp-v2
+      expected_version:
+        type: string
+        required: false
+        default: ""
+      release:
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
 
 env:
+  CODEX_CHATS_BUILD_DEBUG: "0"
   CODEX_CHATS_DEBUG_LOG: "0"
 
 jobs:
   test:
     name: ${{ matrix.os }} Python ${{ matrix.python-version }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -22,35 +44,130 @@ jobs:
             python-version: "3.10"
           - os: ubuntu-latest
             python-version: "3.13"
+          - os: ubuntu-latest
+            python-version: "3.14"
           - os: windows-latest
             python-version: "3.13"
+          - os: macos-latest
+            python-version: "3.13"
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Build wheel
+      - name: Build distributions
         shell: bash
-        run: python -m pip wheel --no-deps --wheel-dir dist .
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade build twine
+          python -m build
+      - name: Check distributions
+        shell: bash
+        run: twine check --strict dist/*
       - name: Test installed wheel
         shell: bash
         run: |
           set -euo pipefail
-          python -m venv .test-venv
+          checkout_dir="$PWD"
+          venv_dir="$RUNNER_TEMP/codex-chats-mcp-test-venv"
+          python -m venv "$venv_dir"
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            venv_python=".test-venv/Scripts/python.exe"
+            venv_python="$venv_dir/Scripts/python.exe"
           else
-            venv_python=".test-venv/bin/python"
+            venv_python="$venv_dir/bin/python"
           fi
           "$venv_python" -m pip install --upgrade pip
           "$venv_python" -m pip install "mcp[cli]==2.1.1"
-          "$venv_python" -m pip install --no-deps dist/*.whl
+          wheel=(dist/*.whl)
+          "$venv_python" -m pip install --no-deps "${wheel[@]}"
           "$venv_python" -m pip check
-          test_python="$PWD/$venv_python"
-          tests_dir="$PWD/tests"
-          test_dir="$PWD/.test-cwd"
+          tests_dir="$checkout_dir/tests"
+          test_dir="$RUNNER_TEMP/codex-chats-mcp-test"
           mkdir -p "$test_dir"
-          trap 'rm -rf "$test_dir"' EXIT
           cd "$test_dir"
           unset PYTHONPATH
-          "$test_python" -m unittest discover -s "$tests_dir" -v
+          CHECKOUT_DIR="$checkout_dir" "$venv_python" - <<'PY'
+          import os
+          import compileall
+          import site
+          from pathlib import Path
+
+          import codex_chats_mcp
+          import mcp
+
+          checkout_dir = Path(os.environ["CHECKOUT_DIR"]).resolve()
+          site_packages = [Path(path).resolve() for path in site.getsitepackages()]
+          for module in (codex_chats_mcp, mcp):
+              module_path = Path(module.__file__).resolve()
+              if checkout_dir == module_path or checkout_dir in module_path.parents:
+                  raise AssertionError(f"{module.__name__} imported from checkout: {module_path}")
+              if not any(
+                  site_path == module_path or site_path in module_path.parents
+                  for site_path in site_packages
+              ):
+                  raise AssertionError(f"{module.__name__} not imported from site-packages: {module_path}")
+              print(f"{module.__name__}: {module_path}")
+          if not compileall.compile_file(str(Path(codex_chats_mcp.__file__).resolve()), quiet=1):
+              raise AssertionError("installed codex_chats_mcp did not compile")
+          if codex_chats_mcp.DEBUG_BUILD is not False:
+              raise AssertionError("normal wheel unexpectedly enables debug build")
+          if codex_chats_mcp._debug_logging_enabled():
+              raise AssertionError("runtime debug logging enabled with CODEX_CHATS_DEBUG_LOG=0")
+          if codex_chats_mcp._resolve_error_log_path() is not None:
+              raise AssertionError("normal wheel resolved a debug log path")
+          os.environ["CODEX_CHATS_DEBUG_LOG"] = "1"
+          if codex_chats_mcp._debug_logging_enabled():
+              raise AssertionError("release wheel enabled debug logging at runtime")
+          if codex_chats_mcp._resolve_error_log_path() is not None:
+              raise AssertionError("release wheel resolved a debug log path at runtime")
+          PY
+          "$venv_python" -m compileall -q "$tests_dir"
+          "$venv_python" -m unittest discover -s "$tests_dir" -p 'test*.py' -v
+      - name: Test debug wheel build
+        shell: bash
+        run: |
+          set -euo pipefail
+          checkout_dir="$PWD"
+          debug_dist="$RUNNER_TEMP/codex-chats-mcp-debug-dist"
+          debug_test_dir="$RUNNER_TEMP/codex-chats-mcp-debug-test"
+          mkdir -p "$debug_dist" "$debug_test_dir"
+          CODEX_CHATS_BUILD_DEBUG=1 python -m build --wheel --outdir "$debug_dist"
+          debug_wheel=("$debug_dist"/*.whl)
+          venv_dir="$RUNNER_TEMP/codex-chats-mcp-test-venv"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            venv_python="$venv_dir/Scripts/python.exe"
+          else
+            venv_python="$venv_dir/bin/python"
+          fi
+          "$venv_python" -m pip install --force-reinstall --no-deps "${debug_wheel[@]}"
+          cd "$debug_test_dir"
+          unset PYTHONPATH
+          CHECKOUT_DIR="$checkout_dir" "$venv_python" - <<'PY'
+          import os
+          from pathlib import Path
+
+          import codex_chats_mcp as server
+
+          checkout_dir = Path(os.environ["CHECKOUT_DIR"]).resolve()
+          module_path = Path(server.__file__).resolve()
+          if checkout_dir == module_path or checkout_dir in module_path.parents:
+              raise AssertionError(f"debug wheel imported from checkout: {module_path}")
+          if server.DEBUG_BUILD is not True:
+              raise AssertionError("debug wheel did not enable debug build")
+          os.environ["CODEX_CHATS_DEBUG_LOG"] = "0"
+          if server._debug_logging_enabled():
+              raise AssertionError("debug wheel enabled logging with CODEX_CHATS_DEBUG_LOG=0")
+          os.environ["CODEX_CHATS_DEBUG_LOG"] = "1"
+          if not server._debug_logging_enabled():
+              raise AssertionError("debug wheel did not enable logging with CODEX_CHATS_DEBUG_LOG=1")
+          print(f"debug wheel: {module_path}")
+          PY
+  build:
+    name: Build verified artifacts
+    needs: test
+    if: ${{ needs.test.result == 'success' }}
+    uses: ./.github/workflows/build.yml
+    with:
+      expected_name: ${{ inputs.expected_name || 'codex-chats-mcp-v2' }}
+      expected_version: ${{ inputs.expected_version || '' }}
+      release: ${{ inputs.release || false }}
