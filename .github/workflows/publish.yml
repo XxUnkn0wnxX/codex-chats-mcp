@@ -1,21 +1,19 @@
 name: Publish to PyPI
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       confirm_publish:
-        description: Confirm this tested main commit should be published to PyPI
+        description: Confirm the first PyPI upload (only while the project does not exist)
         required: true
         default: false
         type: boolean
       expected_version:
-        description: Expected installed distribution version
+        description: Exact stable version for the first upload (from pyproject.toml)
         required: true
-        type: string
-      expected_name:
-        description: Expected distribution name
-        required: true
-        default: codex-chats-mcp-v2
         type: string
 
 permissions:
@@ -26,25 +24,55 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
-    name: Test and build the exact release commit
+  version:
+    name: Check version increase or confirmed first upload
     if: >-
       ${{ github.repository == 'XxUnkn0wnxX/codex-chats-mcp' &&
           github.ref == 'refs/heads/main' &&
-          inputs.confirm_publish == true }}
+          (github.event_name == 'push' ||
+           (github.event_name == 'workflow_dispatch' && inputs.confirm_publish == true)) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      should_publish: ${{ steps.gate.outputs.should_publish }}
+      version: ${{ steps.gate.outputs.version }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+      - name: Install version parser
+        run: python -m pip install packaging
+      - name: Check immutable push versions or first-upload eligibility
+        id: gate
+        run: python .github/scripts/release_gate.py
+
+  build:
+    name: Test and build the exact release commit
+    needs: version
+    if: >-
+      ${{ github.repository == 'XxUnkn0wnxX/codex-chats-mcp' &&
+          github.ref == 'refs/heads/main' &&
+          needs.version.result == 'success' &&
+          needs.version.outputs.should_publish == 'true' }}
     uses: ./.github/workflows/test.yml
     with:
-      expected_name: ${{ inputs.expected_name }}
-      expected_version: ${{ inputs.expected_version }}
+      expected_name: codex-chats-mcp-v2
+      expected_version: ${{ needs.version.outputs.version }}
       release: true
 
   publish:
     name: Publish verified artifacts to PyPI
-    needs: build
+    needs: [version, build]
     if: >-
       ${{ github.repository == 'XxUnkn0wnxX/codex-chats-mcp' &&
           github.ref == 'refs/heads/main' &&
-          inputs.confirm_publish == true &&
+          needs.version.result == 'success' &&
+          needs.version.outputs.should_publish == 'true' &&
           needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10

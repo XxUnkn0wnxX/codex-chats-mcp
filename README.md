@@ -17,9 +17,9 @@ The current source line requires the MCP Python SDK v2: `mcp[cli]>=2.1.1,<3`.
 - The existing PyPI project `codex-chats-mcp` is the upstream distribution, not this maintained fork.
 - This fork's distribution name is `codex-chats-mcp-v2`, and its current source metadata declares version `0.2.0`. The Python module `codex_chats_mcp` and console command `codex-chats-mcp` remain unchanged.
 - PyPI and `uv` installation requires that exact version to be listed on PyPI. Until then, use the stable `main` source install below. The `develop` source commands are for testing the current development line.
-- Publishing is available without an extra enable-switch, but requires a manually confirmed run from `main` and passing Linux/Windows/macOS tests and artifact checks for that exact commit. Pushes, README edits, and version bumps do not automatically publish. The normal `Test` workflow never publishes.
+- The initial `0.2.0` upload is a separately confirmed manual action from `main`. After the first upload, a `main` push can publish automatically only when the declared version is a strictly newer stable PEP 440 version, the fixed distribution name matches, and the complete release gates pass for that exact commit. An unchanged version skips publication even when source or documentation changed.
 
-The tests/build badges track the complete `develop` and `main` CI workflows, including all three operating systems and the final release-artifact build. For local test and build commands, see the [development guide](https://github.com/XxUnkn0wnxX/codex-chats-mcp/blob/develop/DEVELOPMENT.md).
+The tests/build badges track the complete `develop` and `main` CI workflows, including all three operating systems and the final release-artifact build. For local test, promotion, and release commands, see the [development guide](https://github.com/XxUnkn0wnxX/codex-chats-mcp/blob/develop/DEVELOPMENT.md).
 
 ## Install
 

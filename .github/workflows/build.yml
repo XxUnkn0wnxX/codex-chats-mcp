@@ -35,8 +35,8 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install packaging tools
-        run: python -m pip install --upgrade build twine packaging "setuptools>=77.0.3"
-      - name: Test artifact validation guards
+        run: python -m pip install --upgrade build twine packaging pyyaml "setuptools>=77.0.3"
+      - name: Test release gates and artifact validation guards
         run: python -m unittest discover -s .github/scripts -p 'test*.py' -v
       - name: Build sdist and wheel
         run: python -m build

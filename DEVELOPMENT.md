@@ -87,10 +87,10 @@ git diff --check
 
 Full discovery includes the MCP v2 `initialize`/`list_tools` stdio handshake, which verifies 17 advertised tools. A separate stdio test calls list/search/get tools using a fake backend and verifies serialization, middleware correlation, error responses, and argument validation; it blocks real authentication and network access. Running the executable directly waits for an MCP client on stdio; it is not an interactive test.
 
-Build and artifact-validation tooling has its own tests (not runtime dependencies):
+Build, release-gate, and artifact-validation tooling has its own tests (not runtime dependencies). Use the Python 3.13 development environment above:
 
 ```zsh
-python -m pip install build twine packaging 'setuptools>=77.0.3'
+python -m pip install build twine packaging pyyaml 'setuptools>=77.0.3'
 python -m unittest discover -s .github/scripts -p 'test*.py' -v
 ```
 
@@ -216,15 +216,17 @@ The `Test` workflow runs on pushes to `develop` and `main`, and on pull requests
 
 Each matrix entry builds a release-mode sdist and wheel, checks the package/README with `twine check --strict`, installs the wheel with normal pip dependency resolution, records the resolved package versions, checks dependencies and installed-module paths, compiles the code, and runs the full suite from an isolated directory. At the time of writing, normal resolution selects MCP 2.2.0; the workflow tests the resolved SDK within the declared compatible range rather than forcing an exact SDK version. It also builds a separate debug wheel and checks both runtime opt-in states. Tests use fake authentication, a handshake/tool-list check, and synthetic stdio tool calls, not live conversation requests. The live venv command above uses POSIX paths; Windows uses the venv's `Scripts` directory.
 
-After all matrix entries pass, `Test` calls `Build packages` (`build.yml`) at the same commit. That workflow creates and verifies the final release-mode wheel and source archive, tests the final wheel, and retains them as the workflow's downloadable `dist` artifact for 14 days. Neither workflow creates a GitHub Release or uploads to PyPI; `develop` only receives tests and artifacts. Debug smoke-test wheels are never included in `dist`.
+After all matrix entries pass, `Test` calls `Build packages` (`build.yml`) at the same commit. That workflow creates and verifies the final release-mode wheel and source archive, tests the final wheel, and retains them as the workflow's downloadable `dist` artifact for 14 days. These ordinary workflows build artifacts but never publish them to PyPI. Debug smoke-test wheels are never included in `dist`.
 
 Source archives use neutral ownership headers (`root`, UID/GID `0`) rather than the builder's local account name. Artifact validation checks every source-archive member, including extended ownership metadata. Rebuild older local archives before sharing them; ignored build logs, virtual environments, and temporary files can still contain machine-specific paths and are not release artifacts.
 
-The separate `Publish to PyPI` workflow is enabled without a repository-variable switch and may be used only for a manual `workflow_dispatch` from the `main` ref. Its owner gate must match `XxUnkn0wnxX/codex-chats-mcp`, `confirm_publish` must be `true`, `expected_name` must be `codex-chats-mcp-v2`, and `expected_version` must match the package version (`0.2.0` for the first release). Dispatches from other branches cannot build or publish a release. Complete the release prerequisites below before dispatching it.
+The `Publish to PyPI` workflow handles the initial manual upload and later automatic releases. A push to `main` compares `project.version` in `pyproject.toml` at the exact `push.before` and `push.after` commits for the whole push. It publishes only when the fixed distribution name is `codex-chats-mcp-v2` and the new version is a strictly greater stable PEP 440 version. Invalid or downgraded versions, prerelease/development/local release candidates, forced pushes, and unavailable prior commits fail closed. An unchanged version skips publication even when source or documentation changed; the workflow can still show a successful short version-check job. Tags and GitHub Releases are not required and do not trigger publishing.
 
-Every publish run calls the complete `Test` → `Build packages` pipeline at the exact `main` commit being released. All matrix entries and the final build must succeed; failed, cancelled, or skipped tests cannot unlock publishing. Release validation checks the confirmed stable version, fork package name, README metadata, and disabled debug stamps in both archives. Only then does the separate publish job upload the same run's retained artifacts, without rebuilding or taking files from another branch, through PyPI Trusted Publishing (OIDC). It does not use a long-lived PyPI token.
+For the first upload only, open GitHub **Actions → Publish to PyPI → Run workflow**, select `main`, check `confirm_publish`, and enter `0.2.0` as `expected_version`; there is no package-name input. That guarded path proceeds only when the project is absent from PyPI, and refuses an existing project or fails closed on lookup/network errors. Future releases require an explicit version bump in `pyproject.toml`, with the User-Agent version kept in sync, followed by the tested `develop` → `main` promotion.
 
-Publishing is manual, not change-detected: source edits, README edits, version bumps, tags, and ordinary pushes do not trigger an upload. Choose a new stable version in `pyproject.toml` for each release, keep the User-Agent version in sync, and supply that version when dispatching from tested `main`. An unchanged version does not create a new release, and PyPI will reject attempts to replace already-uploaded distribution filenames.
+For example, the next package release could change `version = "0.2.0"` to `version = "0.2.1"`. This package version is not inferred from commit counts, Git tags, or the MCP SDK dependency version.
+
+Both an eligible `main` push and a confirmed first upload run the complete Linux/Windows/macOS `Test` matrix and final artifact build and validation before uploading that same run's `dist` artifact through PyPI Trusted Publishing (OIDC), using the `pypi` environment restricted to `main`. All gates must pass for the exact selected commit; failed, cancelled, or skipped gates cannot unlock publishing. Release validation checks the expected version, package name, README metadata, and disabled debug stamps. If an automatic release fails transiently, rerun the original qualifying main-push run; source fixes need a new version bump on the next push, otherwise publication is skipped. PyPI rejects attempts to overwrite uploaded distribution filenames.
 
 The PyPI headline comes from `project.description` in `pyproject.toml`. The full project description comes from `readme = "README.md"`, captured when the package is built. This is the same metadata mechanism used by upstream. Updating the GitHub README alone does not update an existing PyPI release's description; it is included with the next published version.
 
@@ -238,6 +240,6 @@ Use this short checklist when promoting a release candidate:
 2. Fast-forward `main` to that commit and push `main`.
 3. Return to `develop` for ongoing work.
 4. Verify the `main` workflows pass for the promoted commit.
-5. Treat PyPI as a separate manual action: dispatch `Publish to PyPI` from `main` only after the main checks pass. That workflow repeats the same-commit test and build gates before its publish job.
+5. For the initial `0.2.0` upload, use the guarded manual dispatch only after the main checks pass. Later version bumps are handled by the qualifying main push and its same-commit gates.
 
 Before the first fork release, create one pending PyPI Trusted Publisher registration for project `codex-chats-mcp-v2` using the [trusted-publisher project creation guide](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/). Set owner `XxUnkn0wnxX`, repository `codex-chats-mcp`, workflow `publish.yml`, and environment `pypi`; this pending registration creates the project on its first upload. See the [Trusted Publisher usage guide](https://docs.pypi.org/trusted-publishers/using-a-publisher/) for the registration details. Before the first manual publish run, configure the matching GitHub `pypi` environment to allow only the `main` branch, with no tag policies.
