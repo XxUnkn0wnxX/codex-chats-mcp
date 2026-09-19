@@ -210,7 +210,7 @@ Restart or reload Codex after changing the server: active sessions can retain an
 
 Debug logging requires both a debug wheel and runtime opt-in. It has a hard 8 MiB cap, trims old complete records to about 6 MiB, and uses a cross-process lock while appending/trimming, so concurrent Codex sessions do not interleave unsafe writes. If locking is unavailable it fails closed. Logs contain bounded error metadata and redacted resource IDs only—never successes, message content, authentication, request/response bodies, or queries.
 
-## 8. CI and the future PyPI release
+## 8. CI and the PyPI release flow
 
 The `Test` workflow runs on pushes to `develop` and `main`, and on pull requests targeting either branch, including documentation-only changes. Its matrix covers Linux with Python 3.10, 3.13, and 3.14, plus Windows and macOS with Python 3.13. Hosted macOS CI does not specifically test Big Sur.
 
@@ -228,6 +228,16 @@ Publishing is manual, not change-detected: source edits, README edits, version b
 
 The PyPI headline comes from `project.description` in `pyproject.toml`. The full project description comes from `readme = "README.md"`, captured when the package is built. This is the same metadata mechanism used by upstream. Updating the GitHub README alone does not update an existing PyPI release's description; it is included with the next published version.
 
-The README's live tests/build badge tracks the complete `develop` workflow, not workstation-local results. PyPI badges cannot resolve a pending project. When preparing the first `main` release commit, update the README's pre-publication notices and replace the pending badge with `https://img.shields.io/pypi/v/codex-chats-mcp-v2.svg`, linked to `https://pypi.org/project/codex-chats-mcp-v2/`. It will resolve after the first successful upload; the Python and license badges work independently of PyPI.
+The README carries separate tests/build badges for `develop` and `main`. Its PyPI badge is intentionally a static distribution-name badge until the first successful upload, so it does not imply that `codex-chats-mcp-v2` is already listed. Keep the stable source-install instructions pointed at `main`; keep development and local-test instructions pointed at `develop`. After a successful first upload, the static badge may be replaced with a version badge linked to `https://pypi.org/project/codex-chats-mcp-v2/`.
 
-Before the first fork release, create one pending PyPI Trusted Publisher registration for project `codex-chats-mcp-v2` using the [trusted-publisher project creation guide](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/). Set owner `XxUnkn0wnxX`, repository `codex-chats-mcp`, workflow `publish.yml`, and environment `pypi`; this pending registration creates the project on its first upload. See the [Trusted Publisher usage guide](https://docs.pypi.org/trusted-publishers/using-a-publisher/) for the registration details. Configure the GitHub `pypi` environment to restrict deployment to `main` and require a reviewer if available. Complete these setup steps before the first manual publish run.
+### Promote a tested source line
+
+Use this short checklist when promoting a release candidate:
+
+1. Confirm the exact `develop` commit has passed the full `Test` and `Build packages` workflows.
+2. Fast-forward `main` to that commit and push `main`.
+3. Return to `develop` for ongoing work.
+4. Verify the `main` workflows pass for the promoted commit.
+5. Treat PyPI as a separate manual action: dispatch `Publish to PyPI` from `main` only after the main checks pass. That workflow repeats the same-commit test and build gates before its publish job.
+
+Before the first fork release, create one pending PyPI Trusted Publisher registration for project `codex-chats-mcp-v2` using the [trusted-publisher project creation guide](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/). Set owner `XxUnkn0wnxX`, repository `codex-chats-mcp`, workflow `publish.yml`, and environment `pypi`; this pending registration creates the project on its first upload. See the [Trusted Publisher usage guide](https://docs.pypi.org/trusted-publishers/using-a-publisher/) for the registration details. Before the first manual publish run, configure the matching GitHub `pypi` environment to allow only the `main` branch, with no tag policies.

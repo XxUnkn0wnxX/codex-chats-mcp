@@ -1,8 +1,9 @@
 # codex-chats-mcp
 
-[![Develop tests and build](https://img.shields.io/github/actions/workflow/status/XxUnkn0wnxX/codex-chats-mcp/test.yml?branch=develop&label=tests%20%2B%20build)](https://github.com/XxUnkn0wnxX/codex-chats-mcp/actions/workflows/test.yml?query=branch%3Adevelop)
-[![PyPI: not published yet](https://img.shields.io/badge/PyPI-not_published_yet-lightgrey)](#release-status)
-[![Python: 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/XxUnkn0wnxX/codex-chats-mcp/blob/develop/pyproject.toml)
+[![Tests + build (develop)](https://img.shields.io/github/actions/workflow/status/XxUnkn0wnxX/codex-chats-mcp/test.yml?branch=develop&label=tests%20%2B%20build%20%28develop%29)](https://github.com/XxUnkn0wnxX/codex-chats-mcp/actions/workflows/test.yml?query=branch%3Adevelop)
+[![Tests + build (main)](https://img.shields.io/github/actions/workflow/status/XxUnkn0wnxX/codex-chats-mcp/test.yml?branch=main&label=tests%20%2B%20build%20%28main%29)](https://github.com/XxUnkn0wnxX/codex-chats-mcp/actions/workflows/test.yml?query=branch%3Amain)
+[![PyPI distribution name: codex-chats-mcp-v2](https://img.shields.io/badge/PyPI-codex--chats--mcp--v2-lightgrey)](#release-status)
+[![Python: 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/XxUnkn0wnxX/codex-chats-mcp/blob/main/pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/XxUnkn0wnxX/codex-chats-mcp/blob/main/LICENSE)
 
 An unofficial MCP server for listing, searching, archiving, renaming, exporting, and deleting ChatGPT conversations and Codex Cloud tasks from MCP-compatible clients.
@@ -14,20 +15,19 @@ The current source line requires the MCP Python SDK v2: `mcp[cli]>=2.1.1,<3`.
 ## Release status
 
 - The existing PyPI project `codex-chats-mcp` is the upstream distribution, not this maintained fork.
-- The first fork release is planned as `codex-chats-mcp-v2` version `0.2.0`; it has not been published yet.
-- The distribution name changes for this fork, while the Python module `codex_chats_mcp` and console command `codex-chats-mcp` remain unchanged.
-- The PyPI and `uv` commands below work after that publication. The source and Git commands work from the maintained fork's `develop` branch now.
+- This fork's distribution name is `codex-chats-mcp-v2`, and its current source metadata declares version `0.2.0`. The Python module `codex_chats_mcp` and console command `codex-chats-mcp` remain unchanged.
+- PyPI and `uv` installation requires that exact version to be listed on PyPI. Until then, use the stable `main` source install below. The `develop` source commands are for testing the current development line.
 - Publishing is available without an extra enable-switch, but requires a manually confirmed run from `main` and passing Linux/Windows/macOS tests and artifact checks for that exact commit. Pushes, README edits, and version bumps do not automatically publish. The normal `Test` workflow never publishes.
 
-The tests/build badge tracks `develop` CI, including all three operating systems and the final release-artifact build. For local test and build commands, see the [development guide](https://github.com/XxUnkn0wnxX/codex-chats-mcp/blob/develop/DEVELOPMENT.md).
+The tests/build badges track the complete `develop` and `main` CI workflows, including all three operating systems and the final release-artifact build. For local test and build commands, see the [development guide](https://github.com/XxUnkn0wnxX/codex-chats-mcp/blob/develop/DEVELOPMENT.md).
 
 ## Install
 
 Use a fresh directory and separate isolated environment for each install method; choose one method rather than reusing an environment from another distribution. Do not co-install the upstream `codex-chats-mcp` distribution and this fork: they provide the same `codex_chats_mcp` module and `codex-chats-mcp` executable, so one installation can mask or overwrite the other.
 
-### Planned first fork PyPI release (`codex-chats-mcp-v2` 0.2.0)
+### PyPI distribution (`codex-chats-mcp-v2` 0.2.0)
 
-The first fork PyPI release has not been published yet. After publication, install the pinned release in a dedicated virtual environment:
+Use these commands once `codex-chats-mcp-v2` version `0.2.0` is listed on PyPI. Until then, install the stable `main` source checkout below:
 
 ```zsh
 python3 -m venv .venv
@@ -41,7 +41,19 @@ Or with `uv`:
 uv tool install "codex-chats-mcp-v2==0.2.0"
 ```
 
-### Maintained fork source (clone `develop`, standard install)
+### Maintained fork source (clone `main`, standard install)
+
+```zsh
+git clone --branch main https://github.com/XxUnkn0wnxX/codex-chats-mcp
+cd codex-chats-mcp
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install .
+```
+
+### Current `develop` source snapshot
+
+For testing the current development line in a fresh, non-editable environment:
 
 ```zsh
 git clone --branch develop https://github.com/XxUnkn0wnxX/codex-chats-mcp
@@ -51,14 +63,13 @@ source .venv/bin/activate
 python -m pip install .
 ```
 
-For an editable local checkout while developing, use the same fresh environment
-and opt in explicitly:
+For an editable local checkout while developing, use a fresh environment and opt in explicitly:
 
 ```zsh
 python -m pip install -e .
 ```
 
-For a fresh directory and separate virtual environment, install a snapshot of the current fork `develop` HEAD directly from Git:
+Alternatively, install a snapshot of the current fork `develop` HEAD directly from Git:
 
 ```zsh
 python3 -m venv .venv
